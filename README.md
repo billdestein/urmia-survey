@@ -4,7 +4,7 @@ Brokermatic.ai postcard QR codes will link to a mobile-friendly, single-file sur
 
 ## Status
 
-The supplied TriCheck URMIA survey prototype is now in `index.html`, with its questions and design preserved. The local page validates answers and sends them to the deployed API, which stores responses in DynamoDB. The connected version awaits launch approval; the public page remains a prototype until it is pushed. The AWS backend is implemented with public POST collection and IAM-authenticated CSV export. The backend is deployed in AWS account `993351246435`, region `us-west-2`, stack `urmia-survey`. Frontend launch approval and final privacy/consent review remain pending.
+The supplied TriCheck URMIA survey prototype is now in `index.html`, with its questions and design preserved. The published page validates answers and sends them to the deployed API, which stores responses in DynamoDB. The AWS backend is implemented with public POST collection and IAM-authenticated CSV export. The backend is deployed in AWS account `993351246435`, region `us-west-2`, stack `urmia-survey`. Publication and collection of answers and optional contact details were approved by the project owner.
 
 Repository: https://github.com/billdestein/urmia-survey (public).
 
@@ -20,7 +20,7 @@ Repository: https://github.com/billdestein/urmia-survey (public).
 1. Repository hosted under `billdestein/urmia-survey` on GitHub.com.
 2. Review the supplied survey questions and approve privacy/consent copy.
 3. Backend deployed; see `backend/README.md` for updates and authenticated exports.
-4. Review and publish the connected page; successful storage is confirmed before showing the thank-you screen.
+4. The connected page confirms successful storage before showing the thank-you screen.
 5. GitHub Pages publishes directly from the root of `main` at https://billdestein.github.io/urmia-survey/. The workflow template is optional and inactive; branch-based publishing does not require it.
 6. Verify mobile submission and export before printing the final QR-code URL.
 
