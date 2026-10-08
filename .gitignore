@@ -1,0 +1,13 @@
+# Local secrets and tools
+.env
+.env.*
+!.env.example
+.aws/
+node_modules/
+__pycache__/
+.DS_Store
+
+# Survey data and exports
+exports/
+responses/
+*.csv
