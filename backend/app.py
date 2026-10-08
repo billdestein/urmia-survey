@@ -114,8 +114,13 @@ def csv_cell(value):
 
 
 def export(event, context):
-    # API Gateway rejects unsigned requests; also reject events without IAM identity.
-    if not event.get('requestContext', {}).get('authorizer', {}).get('iam', {}).get('userArn'):
+    # Trust only identities verified by the API Gateway route authorizer.
+    authorizer = event.get('requestContext', {}).get('authorizer', {})
+    claims = authorizer.get('jwt', {}).get('claims', {})
+    browser_admin = (claims.get('token_use') == 'access' and
+                     'urmia-export/download' in claims.get('scope', '').split() and
+                     claims.get('client_id') == os.environ.get('ADMIN_CLIENT_ID'))
+    if not (authorizer.get('iam', {}).get('userArn') or browser_admin):
         return response(403, {'error': 'Authentication required.'})
     output = io.StringIO(newline='')
     writer = csv.writer(output)

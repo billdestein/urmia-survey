@@ -50,11 +50,13 @@
             "https://billdestein.github.io"
           ],
           "AllowMethods": [
-            "POST"
+            "POST",
+            "GET"
           ],
           "AllowHeaders": [
             "content-type",
-            "idempotency-key"
+            "idempotency-key",
+            "authorization"
           ],
           "MaxAge": 600
         }
@@ -162,7 +164,7 @@
           }
         },
         "Code": {
-          "ZipFile": "\"\"\"Survey handlers; API Gateway HTTP API v2 events.\"\"\"\nimport base64\nimport csv\nimport hashlib\nimport io\nimport json\nimport os\nimport re\nimport uuid\nfrom datetime import datetime, timezone\n\n# Exact choices from the supplied survey, populated by generate_template.py.\nCHOICES = {'q1': ['Same day', '2\u20135 days', '1\u20132 weeks', \"We don't really know\"], 'q2': ['The contract', 'A standard exhibit', 'A campus policy', \"Someone's head\"], 'q3': ['Risk', 'Procurement', 'The hiring department', 'Whoever has time'], 'q4': [\"Risk, and it's documented\", 'A department head, informally', 'Whoever is asked', 'Nobody \u2014 we just proceed'], 'q5': ['System status', 'Email from Risk', 'They ask', \"They don't check\"], 'q6': ['0\u201310', '10\u201350', '50\u2013200', '200+'], 'q7': ['A dedicated system', 'Our ERP or procurement platform', 'Spreadsheets and email', \"It's not tracked in one place\"], 'role': ['', 'Risk Management / Insurance', 'Procurement / Supply Chain', 'Treasury / Finance', 'Facilities / Capital Projects', 'Other'], 'vendor_count': ['', 'Under 50', '50\u2013200', '200\u20131,000', '1,000+'], 'institution_type': ['', 'Public', 'Private', 'Other (health system, agency, etc.)']}\nTABLE = None\nMAX_BODY = 24000\nMAX_CSV = 4000000\nTEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,\n               'email': 254, 'institution': 300}\nCOLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [\n    'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',\n    'interview_optin', 'name', 'email', 'institution']\n\n\ndef table():\n    global TABLE\n    if TABLE is None:\n        import boto3\n        TABLE = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])\n    return TABLE\n\n\ndef response(status, body):\n    return {'statusCode': status, 'headers': {'Content-Type': 'application/json',\n            'Cache-Control': 'no-store'}, 'body': json.dumps(body)}\n\n\ndef validate(data):\n    if not isinstance(data, dict):\n        raise ValueError('Expected a JSON object.')\n    allowed = set(COLUMNS) - {'response_id'}\n    if set(data) - allowed:\n        raise ValueError('Unexpected fields.')\n    cleaned = {}\n    for field, options in CHOICES.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or value not in options:\n            raise ValueError(f'Invalid or missing {field}.')\n        cleaned[field] = value\n    for field, limit in TEXT_LIMITS.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or len(value) > limit or '\\x00' in value:\n            raise ValueError(f'Invalid {field} (maximum {limit} characters).')\n        cleaned[field] = value.strip()\n    if type(data.get('interview_optin')) is not bool:\n        raise ValueError('interview_optin must be true or false.')\n    cleaned['interview_optin'] = data['interview_optin']\n    if cleaned['interview_optin']:\n        if not cleaned['name'] or not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', cleaned['email']):\n            raise ValueError('Name and valid email are required for an interview.')\n    else:\n        for field in ('name', 'email', 'institution'):\n            cleaned[field] = ''\n    if cleaned['q7'] != 'A dedicated system':\n        cleaned['q7a'] = ''\n    cleaned['hot_count'] = sum(cleaned[f'q{i}'] == CHOICES[f'q{i}'][-1] for i in range(1, 8))\n    return cleaned\n\n\ndef submit(event, context):\n    if os.environ.get('SURVEY_OPEN', 'true') != 'true':\n        return response(410, {'error': 'The survey is closed.'})\n    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}\n    if headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':\n        return response(415, {'error': 'Use application/json.'})\n    try:\n        raw = event.get('body') or ''\n        if len(raw) > MAX_BODY * 2:\n            return response(413, {'error': 'Response is too large.'})\n        raw = base64.b64decode(raw, validate=True) if event.get('isBase64Encoded') else raw.encode('utf-8')\n        if len(raw) > MAX_BODY:\n            return response(413, {'error': 'Response is too large.'})\n        data = validate(json.loads(raw))\n        key = headers.get('idempotency-key', '')\n        if key and not re.fullmatch(r'[A-Za-z0-9-]{16,100}', key):\n            raise ValueError('Invalid Idempotency-Key.')\n    except (ValueError, TypeError, UnicodeError):\n        return response(400, {'error': 'Invalid response. Check required answers and field lengths.'})\n    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()\n    response_id = key or str(uuid.uuid4())\n    item = dict(data, response_id=response_id, submitted_at=datetime.now(timezone.utc).isoformat(),\n                payload_hash=fingerprint)\n    try:\n        table().put_item(Item=item, ConditionExpression='attribute_not_exists(response_id)')\n    except Exception as exc:\n        if getattr(exc, 'response', {}).get('Error', {}).get('Code') == 'ConditionalCheckFailedException':\n            try:\n                existing = table().get_item(Key={'response_id': response_id}, ConsistentRead=True).get('Item', {})\n                if existing.get('payload_hash') == fingerprint:\n                    return response(200, {'responseId': response_id})\n                return response(409, {'error': 'Retry key already used for different answers.'})\n            except Exception:\n                pass\n        return response(503, {'error': 'Unable to save right now. Please retry.'})\n    return response(201, {'responseId': response_id})\n\n\ndef csv_cell(value):\n    if isinstance(value, bool):\n        return 'true' if value else 'false'\n    text = str(value)\n    if text.lstrip().startswith(('=', '+', '-', '@', '\\t', '\\r', '\\n')) or text.startswith(('\\t', '\\r', '\\n')):\n        text = \"'\" + text\n    return text\n\n\ndef export(event, context):\n    # API Gateway rejects unsigned requests; also reject events without IAM identity.\n    if not event.get('requestContext', {}).get('authorizer', {}).get('iam', {}).get('userArn'):\n        return response(403, {'error': 'Authentication required.'})\n    output = io.StringIO(newline='')\n    writer = csv.writer(output)\n    writer.writerow(COLUMNS)\n    options = {'ConsistentRead': True}\n    size = len(output.getvalue().encode('utf-8'))\n    try:\n        while True:\n            page = table().scan(**options)\n            for item in page.get('Items', []):\n                before = output.tell()\n                writer.writerow([csv_cell(item.get(column, '')) for column in COLUMNS])\n                size += len(output.getvalue()[before:].encode('utf-8'))\n                if size > MAX_CSV:\n                    return response(413, {'error': 'Export exceeds download limit; use an offline DynamoDB export.'})\n            if not page.get('LastEvaluatedKey'):\n                break\n            options['ExclusiveStartKey'] = page['LastEvaluatedKey']\n            if context and context.get_remaining_time_in_millis() < 5000:\n                return response(503, {'error': 'Export timed out; retry or use an offline export.'})\n    except Exception:\n        return response(503, {'error': 'Unable to export right now.'})\n    return {'statusCode': 200, 'headers': {'Content-Type': 'text/csv; charset=utf-8',\n            'Content-Disposition': 'attachment; filename=\"urmia-responses.csv\"',\n            'Cache-Control': 'no-store'}, 'body': output.getvalue()}\n"
+          "ZipFile": "\"\"\"Survey handlers; API Gateway HTTP API v2 events.\"\"\"\nimport base64\nimport csv\nimport hashlib\nimport io\nimport json\nimport os\nimport re\nimport uuid\nfrom datetime import datetime, timezone\n\n# Exact choices from the supplied survey, populated by generate_template.py.\nCHOICES = {'q1': ['Same day', '2\u20135 days', '1\u20132 weeks', \"We don't really know\"], 'q2': ['The contract', 'A standard exhibit', 'A campus policy', \"Someone's head\"], 'q3': ['Risk', 'Procurement', 'The hiring department', 'Whoever has time'], 'q4': [\"Risk, and it's documented\", 'A department head, informally', 'Whoever is asked', 'Nobody \u2014 we just proceed'], 'q5': ['System status', 'Email from Risk', 'They ask', \"They don't check\"], 'q6': ['0\u201310', '10\u201350', '50\u2013200', '200+'], 'q7': ['A dedicated system', 'Our ERP or procurement platform', 'Spreadsheets and email', \"It's not tracked in one place\"], 'role': ['', 'Risk Management / Insurance', 'Procurement / Supply Chain', 'Treasury / Finance', 'Facilities / Capital Projects', 'Other'], 'vendor_count': ['', 'Under 50', '50\u2013200', '200\u20131,000', '1,000+'], 'institution_type': ['', 'Public', 'Private', 'Other (health system, agency, etc.)']}\nTABLE = None\nMAX_BODY = 24000\nMAX_CSV = 4000000\nTEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,\n               'email': 254, 'institution': 300}\nCOLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [\n    'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',\n    'interview_optin', 'name', 'email', 'institution']\n\n\ndef table():\n    global TABLE\n    if TABLE is None:\n        import boto3\n        TABLE = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])\n    return TABLE\n\n\ndef response(status, body):\n    return {'statusCode': status, 'headers': {'Content-Type': 'application/json',\n            'Cache-Control': 'no-store'}, 'body': json.dumps(body)}\n\n\ndef validate(data):\n    if not isinstance(data, dict):\n        raise ValueError('Expected a JSON object.')\n    allowed = set(COLUMNS) - {'response_id'}\n    if set(data) - allowed:\n        raise ValueError('Unexpected fields.')\n    cleaned = {}\n    for field, options in CHOICES.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or value not in options:\n            raise ValueError(f'Invalid or missing {field}.')\n        cleaned[field] = value\n    for field, limit in TEXT_LIMITS.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or len(value) > limit or '\\x00' in value:\n            raise ValueError(f'Invalid {field} (maximum {limit} characters).')\n        cleaned[field] = value.strip()\n    if type(data.get('interview_optin')) is not bool:\n        raise ValueError('interview_optin must be true or false.')\n    cleaned['interview_optin'] = data['interview_optin']\n    if cleaned['interview_optin']:\n        if not cleaned['name'] or not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', cleaned['email']):\n            raise ValueError('Name and valid email are required for an interview.')\n    else:\n        for field in ('name', 'email', 'institution'):\n            cleaned[field] = ''\n    if cleaned['q7'] != 'A dedicated system':\n        cleaned['q7a'] = ''\n    cleaned['hot_count'] = sum(cleaned[f'q{i}'] == CHOICES[f'q{i}'][-1] for i in range(1, 8))\n    return cleaned\n\n\ndef submit(event, context):\n    if os.environ.get('SURVEY_OPEN', 'true') != 'true':\n        return response(410, {'error': 'The survey is closed.'})\n    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}\n    if headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':\n        return response(415, {'error': 'Use application/json.'})\n    try:\n        raw = event.get('body') or ''\n        if len(raw) > MAX_BODY * 2:\n            return response(413, {'error': 'Response is too large.'})\n        raw = base64.b64decode(raw, validate=True) if event.get('isBase64Encoded') else raw.encode('utf-8')\n        if len(raw) > MAX_BODY:\n            return response(413, {'error': 'Response is too large.'})\n        data = validate(json.loads(raw))\n        key = headers.get('idempotency-key', '')\n        if key and not re.fullmatch(r'[A-Za-z0-9-]{16,100}', key):\n            raise ValueError('Invalid Idempotency-Key.')\n    except (ValueError, TypeError, UnicodeError):\n        return response(400, {'error': 'Invalid response. Check required answers and field lengths.'})\n    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()\n    response_id = key or str(uuid.uuid4())\n    item = dict(data, response_id=response_id, submitted_at=datetime.now(timezone.utc).isoformat(),\n                payload_hash=fingerprint)\n    try:\n        table().put_item(Item=item, ConditionExpression='attribute_not_exists(response_id)')\n    except Exception as exc:\n        if getattr(exc, 'response', {}).get('Error', {}).get('Code') == 'ConditionalCheckFailedException':\n            try:\n                existing = table().get_item(Key={'response_id': response_id}, ConsistentRead=True).get('Item', {})\n                if existing.get('payload_hash') == fingerprint:\n                    return response(200, {'responseId': response_id})\n                return response(409, {'error': 'Retry key already used for different answers.'})\n            except Exception:\n                pass\n        return response(503, {'error': 'Unable to save right now. Please retry.'})\n    return response(201, {'responseId': response_id})\n\n\ndef csv_cell(value):\n    if isinstance(value, bool):\n        return 'true' if value else 'false'\n    text = str(value)\n    if text.lstrip().startswith(('=', '+', '-', '@', '\\t', '\\r', '\\n')) or text.startswith(('\\t', '\\r', '\\n')):\n        text = \"'\" + text\n    return text\n\n\ndef export(event, context):\n    # Trust only identities verified by the API Gateway route authorizer.\n    authorizer = event.get('requestContext', {}).get('authorizer', {})\n    claims = authorizer.get('jwt', {}).get('claims', {})\n    browser_admin = (claims.get('token_use') == 'access' and\n                     'urmia-export/download' in claims.get('scope', '').split() and\n                     claims.get('client_id') == os.environ.get('ADMIN_CLIENT_ID'))\n    if not (authorizer.get('iam', {}).get('userArn') or browser_admin):\n        return response(403, {'error': 'Authentication required.'})\n    output = io.StringIO(newline='')\n    writer = csv.writer(output)\n    writer.writerow(COLUMNS)\n    options = {'ConsistentRead': True}\n    size = len(output.getvalue().encode('utf-8'))\n    try:\n        while True:\n            page = table().scan(**options)\n            for item in page.get('Items', []):\n                before = output.tell()\n                writer.writerow([csv_cell(item.get(column, '')) for column in COLUMNS])\n                size += len(output.getvalue()[before:].encode('utf-8'))\n                if size > MAX_CSV:\n                    return response(413, {'error': 'Export exceeds download limit; use an offline DynamoDB export.'})\n            if not page.get('LastEvaluatedKey'):\n                break\n            options['ExclusiveStartKey'] = page['LastEvaluatedKey']\n            if context and context.get_remaining_time_in_millis() < 5000:\n                return response(503, {'error': 'Export timed out; retry or use an offline export.'})\n    except Exception:\n        return response(503, {'error': 'Unable to export right now.'})\n    return {'statusCode': 200, 'headers': {'Content-Type': 'text/csv; charset=utf-8',\n            'Content-Disposition': 'attachment; filename=\"urmia-responses.csv\"',\n            'Cache-Control': 'no-store'}, 'body': output.getvalue()}\n"
         }
       }
     },
@@ -299,11 +301,14 @@
             },
             "SURVEY_OPEN": {
               "Ref": "SurveyOpen"
+            },
+            "ADMIN_CLIENT_ID": {
+              "Ref": "AdminClient"
             }
           }
         },
         "Code": {
-          "ZipFile": "\"\"\"Survey handlers; API Gateway HTTP API v2 events.\"\"\"\nimport base64\nimport csv\nimport hashlib\nimport io\nimport json\nimport os\nimport re\nimport uuid\nfrom datetime import datetime, timezone\n\n# Exact choices from the supplied survey, populated by generate_template.py.\nCHOICES = {'q1': ['Same day', '2\u20135 days', '1\u20132 weeks', \"We don't really know\"], 'q2': ['The contract', 'A standard exhibit', 'A campus policy', \"Someone's head\"], 'q3': ['Risk', 'Procurement', 'The hiring department', 'Whoever has time'], 'q4': [\"Risk, and it's documented\", 'A department head, informally', 'Whoever is asked', 'Nobody \u2014 we just proceed'], 'q5': ['System status', 'Email from Risk', 'They ask', \"They don't check\"], 'q6': ['0\u201310', '10\u201350', '50\u2013200', '200+'], 'q7': ['A dedicated system', 'Our ERP or procurement platform', 'Spreadsheets and email', \"It's not tracked in one place\"], 'role': ['', 'Risk Management / Insurance', 'Procurement / Supply Chain', 'Treasury / Finance', 'Facilities / Capital Projects', 'Other'], 'vendor_count': ['', 'Under 50', '50\u2013200', '200\u20131,000', '1,000+'], 'institution_type': ['', 'Public', 'Private', 'Other (health system, agency, etc.)']}\nTABLE = None\nMAX_BODY = 24000\nMAX_CSV = 4000000\nTEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,\n               'email': 254, 'institution': 300}\nCOLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [\n    'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',\n    'interview_optin', 'name', 'email', 'institution']\n\n\ndef table():\n    global TABLE\n    if TABLE is None:\n        import boto3\n        TABLE = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])\n    return TABLE\n\n\ndef response(status, body):\n    return {'statusCode': status, 'headers': {'Content-Type': 'application/json',\n            'Cache-Control': 'no-store'}, 'body': json.dumps(body)}\n\n\ndef validate(data):\n    if not isinstance(data, dict):\n        raise ValueError('Expected a JSON object.')\n    allowed = set(COLUMNS) - {'response_id'}\n    if set(data) - allowed:\n        raise ValueError('Unexpected fields.')\n    cleaned = {}\n    for field, options in CHOICES.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or value not in options:\n            raise ValueError(f'Invalid or missing {field}.')\n        cleaned[field] = value\n    for field, limit in TEXT_LIMITS.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or len(value) > limit or '\\x00' in value:\n            raise ValueError(f'Invalid {field} (maximum {limit} characters).')\n        cleaned[field] = value.strip()\n    if type(data.get('interview_optin')) is not bool:\n        raise ValueError('interview_optin must be true or false.')\n    cleaned['interview_optin'] = data['interview_optin']\n    if cleaned['interview_optin']:\n        if not cleaned['name'] or not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', cleaned['email']):\n            raise ValueError('Name and valid email are required for an interview.')\n    else:\n        for field in ('name', 'email', 'institution'):\n            cleaned[field] = ''\n    if cleaned['q7'] != 'A dedicated system':\n        cleaned['q7a'] = ''\n    cleaned['hot_count'] = sum(cleaned[f'q{i}'] == CHOICES[f'q{i}'][-1] for i in range(1, 8))\n    return cleaned\n\n\ndef submit(event, context):\n    if os.environ.get('SURVEY_OPEN', 'true') != 'true':\n        return response(410, {'error': 'The survey is closed.'})\n    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}\n    if headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':\n        return response(415, {'error': 'Use application/json.'})\n    try:\n        raw = event.get('body') or ''\n        if len(raw) > MAX_BODY * 2:\n            return response(413, {'error': 'Response is too large.'})\n        raw = base64.b64decode(raw, validate=True) if event.get('isBase64Encoded') else raw.encode('utf-8')\n        if len(raw) > MAX_BODY:\n            return response(413, {'error': 'Response is too large.'})\n        data = validate(json.loads(raw))\n        key = headers.get('idempotency-key', '')\n        if key and not re.fullmatch(r'[A-Za-z0-9-]{16,100}', key):\n            raise ValueError('Invalid Idempotency-Key.')\n    except (ValueError, TypeError, UnicodeError):\n        return response(400, {'error': 'Invalid response. Check required answers and field lengths.'})\n    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()\n    response_id = key or str(uuid.uuid4())\n    item = dict(data, response_id=response_id, submitted_at=datetime.now(timezone.utc).isoformat(),\n                payload_hash=fingerprint)\n    try:\n        table().put_item(Item=item, ConditionExpression='attribute_not_exists(response_id)')\n    except Exception as exc:\n        if getattr(exc, 'response', {}).get('Error', {}).get('Code') == 'ConditionalCheckFailedException':\n            try:\n                existing = table().get_item(Key={'response_id': response_id}, ConsistentRead=True).get('Item', {})\n                if existing.get('payload_hash') == fingerprint:\n                    return response(200, {'responseId': response_id})\n                return response(409, {'error': 'Retry key already used for different answers.'})\n            except Exception:\n                pass\n        return response(503, {'error': 'Unable to save right now. Please retry.'})\n    return response(201, {'responseId': response_id})\n\n\ndef csv_cell(value):\n    if isinstance(value, bool):\n        return 'true' if value else 'false'\n    text = str(value)\n    if text.lstrip().startswith(('=', '+', '-', '@', '\\t', '\\r', '\\n')) or text.startswith(('\\t', '\\r', '\\n')):\n        text = \"'\" + text\n    return text\n\n\ndef export(event, context):\n    # API Gateway rejects unsigned requests; also reject events without IAM identity.\n    if not event.get('requestContext', {}).get('authorizer', {}).get('iam', {}).get('userArn'):\n        return response(403, {'error': 'Authentication required.'})\n    output = io.StringIO(newline='')\n    writer = csv.writer(output)\n    writer.writerow(COLUMNS)\n    options = {'ConsistentRead': True}\n    size = len(output.getvalue().encode('utf-8'))\n    try:\n        while True:\n            page = table().scan(**options)\n            for item in page.get('Items', []):\n                before = output.tell()\n                writer.writerow([csv_cell(item.get(column, '')) for column in COLUMNS])\n                size += len(output.getvalue()[before:].encode('utf-8'))\n                if size > MAX_CSV:\n                    return response(413, {'error': 'Export exceeds download limit; use an offline DynamoDB export.'})\n            if not page.get('LastEvaluatedKey'):\n                break\n            options['ExclusiveStartKey'] = page['LastEvaluatedKey']\n            if context and context.get_remaining_time_in_millis() < 5000:\n                return response(503, {'error': 'Export timed out; retry or use an offline export.'})\n    except Exception:\n        return response(503, {'error': 'Unable to export right now.'})\n    return {'statusCode': 200, 'headers': {'Content-Type': 'text/csv; charset=utf-8',\n            'Content-Disposition': 'attachment; filename=\"urmia-responses.csv\"',\n            'Cache-Control': 'no-store'}, 'body': output.getvalue()}\n"
+          "ZipFile": "\"\"\"Survey handlers; API Gateway HTTP API v2 events.\"\"\"\nimport base64\nimport csv\nimport hashlib\nimport io\nimport json\nimport os\nimport re\nimport uuid\nfrom datetime import datetime, timezone\n\n# Exact choices from the supplied survey, populated by generate_template.py.\nCHOICES = {'q1': ['Same day', '2\u20135 days', '1\u20132 weeks', \"We don't really know\"], 'q2': ['The contract', 'A standard exhibit', 'A campus policy', \"Someone's head\"], 'q3': ['Risk', 'Procurement', 'The hiring department', 'Whoever has time'], 'q4': [\"Risk, and it's documented\", 'A department head, informally', 'Whoever is asked', 'Nobody \u2014 we just proceed'], 'q5': ['System status', 'Email from Risk', 'They ask', \"They don't check\"], 'q6': ['0\u201310', '10\u201350', '50\u2013200', '200+'], 'q7': ['A dedicated system', 'Our ERP or procurement platform', 'Spreadsheets and email', \"It's not tracked in one place\"], 'role': ['', 'Risk Management / Insurance', 'Procurement / Supply Chain', 'Treasury / Finance', 'Facilities / Capital Projects', 'Other'], 'vendor_count': ['', 'Under 50', '50\u2013200', '200\u20131,000', '1,000+'], 'institution_type': ['', 'Public', 'Private', 'Other (health system, agency, etc.)']}\nTABLE = None\nMAX_BODY = 24000\nMAX_CSV = 4000000\nTEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,\n               'email': 254, 'institution': 300}\nCOLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [\n    'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',\n    'interview_optin', 'name', 'email', 'institution']\n\n\ndef table():\n    global TABLE\n    if TABLE is None:\n        import boto3\n        TABLE = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])\n    return TABLE\n\n\ndef response(status, body):\n    return {'statusCode': status, 'headers': {'Content-Type': 'application/json',\n            'Cache-Control': 'no-store'}, 'body': json.dumps(body)}\n\n\ndef validate(data):\n    if not isinstance(data, dict):\n        raise ValueError('Expected a JSON object.')\n    allowed = set(COLUMNS) - {'response_id'}\n    if set(data) - allowed:\n        raise ValueError('Unexpected fields.')\n    cleaned = {}\n    for field, options in CHOICES.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or value not in options:\n            raise ValueError(f'Invalid or missing {field}.')\n        cleaned[field] = value\n    for field, limit in TEXT_LIMITS.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or len(value) > limit or '\\x00' in value:\n            raise ValueError(f'Invalid {field} (maximum {limit} characters).')\n        cleaned[field] = value.strip()\n    if type(data.get('interview_optin')) is not bool:\n        raise ValueError('interview_optin must be true or false.')\n    cleaned['interview_optin'] = data['interview_optin']\n    if cleaned['interview_optin']:\n        if not cleaned['name'] or not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', cleaned['email']):\n            raise ValueError('Name and valid email are required for an interview.')\n    else:\n        for field in ('name', 'email', 'institution'):\n            cleaned[field] = ''\n    if cleaned['q7'] != 'A dedicated system':\n        cleaned['q7a'] = ''\n    cleaned['hot_count'] = sum(cleaned[f'q{i}'] == CHOICES[f'q{i}'][-1] for i in range(1, 8))\n    return cleaned\n\n\ndef submit(event, context):\n    if os.environ.get('SURVEY_OPEN', 'true') != 'true':\n        return response(410, {'error': 'The survey is closed.'})\n    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}\n    if headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':\n        return response(415, {'error': 'Use application/json.'})\n    try:\n        raw = event.get('body') or ''\n        if len(raw) > MAX_BODY * 2:\n            return response(413, {'error': 'Response is too large.'})\n        raw = base64.b64decode(raw, validate=True) if event.get('isBase64Encoded') else raw.encode('utf-8')\n        if len(raw) > MAX_BODY:\n            return response(413, {'error': 'Response is too large.'})\n        data = validate(json.loads(raw))\n        key = headers.get('idempotency-key', '')\n        if key and not re.fullmatch(r'[A-Za-z0-9-]{16,100}', key):\n            raise ValueError('Invalid Idempotency-Key.')\n    except (ValueError, TypeError, UnicodeError):\n        return response(400, {'error': 'Invalid response. Check required answers and field lengths.'})\n    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()\n    response_id = key or str(uuid.uuid4())\n    item = dict(data, response_id=response_id, submitted_at=datetime.now(timezone.utc).isoformat(),\n                payload_hash=fingerprint)\n    try:\n        table().put_item(Item=item, ConditionExpression='attribute_not_exists(response_id)')\n    except Exception as exc:\n        if getattr(exc, 'response', {}).get('Error', {}).get('Code') == 'ConditionalCheckFailedException':\n            try:\n                existing = table().get_item(Key={'response_id': response_id}, ConsistentRead=True).get('Item', {})\n                if existing.get('payload_hash') == fingerprint:\n                    return response(200, {'responseId': response_id})\n                return response(409, {'error': 'Retry key already used for different answers.'})\n            except Exception:\n                pass\n        return response(503, {'error': 'Unable to save right now. Please retry.'})\n    return response(201, {'responseId': response_id})\n\n\ndef csv_cell(value):\n    if isinstance(value, bool):\n        return 'true' if value else 'false'\n    text = str(value)\n    if text.lstrip().startswith(('=', '+', '-', '@', '\\t', '\\r', '\\n')) or text.startswith(('\\t', '\\r', '\\n')):\n        text = \"'\" + text\n    return text\n\n\ndef export(event, context):\n    # Trust only identities verified by the API Gateway route authorizer.\n    authorizer = event.get('requestContext', {}).get('authorizer', {})\n    claims = authorizer.get('jwt', {}).get('claims', {})\n    browser_admin = (claims.get('token_use') == 'access' and\n                     'urmia-export/download' in claims.get('scope', '').split() and\n                     claims.get('client_id') == os.environ.get('ADMIN_CLIENT_ID'))\n    if not (authorizer.get('iam', {}).get('userArn') or browser_admin):\n        return response(403, {'error': 'Authentication required.'})\n    output = io.StringIO(newline='')\n    writer = csv.writer(output)\n    writer.writerow(COLUMNS)\n    options = {'ConsistentRead': True}\n    size = len(output.getvalue().encode('utf-8'))\n    try:\n        while True:\n            page = table().scan(**options)\n            for item in page.get('Items', []):\n                before = output.tell()\n                writer.writerow([csv_cell(item.get(column, '')) for column in COLUMNS])\n                size += len(output.getvalue()[before:].encode('utf-8'))\n                if size > MAX_CSV:\n                    return response(413, {'error': 'Export exceeds download limit; use an offline DynamoDB export.'})\n            if not page.get('LastEvaluatedKey'):\n                break\n            options['ExclusiveStartKey'] = page['LastEvaluatedKey']\n            if context and context.get_remaining_time_in_millis() < 5000:\n                return response(503, {'error': 'Export timed out; retry or use an offline export.'})\n    except Exception:\n        return response(503, {'error': 'Unable to export right now.'})\n    return {'statusCode': 200, 'headers': {'Content-Type': 'text/csv; charset=utf-8',\n            'Content-Disposition': 'attachment; filename=\"urmia-responses.csv\"',\n            'Cache-Control': 'no-store'}, 'body': output.getvalue()}\n"
         }
       }
     },
@@ -356,6 +361,173 @@
           "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/GET/responses.csv"
         }
       }
+    },
+    "AdminPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "Properties": {
+        "UserPoolName": {
+          "Fn::Sub": "${AWS::StackName}-admins"
+        },
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": true
+        },
+        "UsernameAttributes": [
+          "email"
+        ],
+        "AutoVerifiedAttributes": [
+          "email"
+        ],
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 12,
+            "RequireLowercase": true,
+            "RequireUppercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "TemporaryPasswordValidityDays": 7
+          }
+        },
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1
+            }
+          ]
+        }
+      }
+    },
+    "AdminScope": {
+      "Type": "AWS::Cognito::UserPoolResourceServer",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "AdminPool"
+        },
+        "Identifier": "urmia-export",
+        "Name": "Survey exports",
+        "Scopes": [
+          {
+            "ScopeName": "download",
+            "ScopeDescription": "Download survey response CSV"
+          }
+        ]
+      }
+    },
+    "AdminClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "DependsOn": "AdminScope",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "AdminPool"
+        },
+        "ClientName": "Survey export page",
+        "GenerateSecret": false,
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthScopes": [
+          "openid",
+          "email",
+          "urmia-export/download"
+        ],
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "CallbackURLs": [
+          "https://billdestein.github.io/urmia-survey/admin.html"
+        ],
+        "LogoutURLs": [
+          "https://billdestein.github.io/urmia-survey/admin.html"
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "AccessTokenValidity": 15,
+        "IdTokenValidity": 15,
+        "RefreshTokenValidity": 1,
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "days"
+        },
+        "EnableTokenRevocation": true
+      }
+    },
+    "AdminDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "AdminPool"
+        },
+        "Domain": {
+          "Fn::Sub": "urmia-export-${AWS::AccountId}-${AWS::Region}"
+        }
+      }
+    },
+    "AdminAuthorizer": {
+      "Type": "AWS::ApiGatewayV2::Authorizer",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "AuthorizerType": "JWT",
+        "Name": "InviteOnlyAdmins",
+        "IdentitySource": [
+          "$request.header.Authorization"
+        ],
+        "JwtConfiguration": {
+          "Audience": [
+            {
+              "Ref": "AdminClient"
+            }
+          ],
+          "Issuer": {
+            "Fn::Sub": "https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminPool}"
+          }
+        }
+      }
+    },
+    "AdminRoute": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "RouteKey": "GET /admin/responses.csv",
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "AdminAuthorizer"
+        },
+        "AuthorizationScopes": [
+          "urmia-export/download"
+        ],
+        "Target": {
+          "Fn::Join": [
+            "/",
+            [
+              "integrations",
+              {
+                "Ref": "ExportIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "AdminPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Export"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/GET/admin/responses.csv"
+        }
+      }
     }
   },
   "Outputs": {
@@ -377,6 +549,26 @@
     "ExportInvokeArn": {
       "Value": {
         "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/$default/GET/responses.csv"
+      }
+    },
+    "AdminPoolId": {
+      "Value": {
+        "Ref": "AdminPool"
+      }
+    },
+    "AdminClientId": {
+      "Value": {
+        "Ref": "AdminClient"
+      }
+    },
+    "AdminLoginUrl": {
+      "Value": {
+        "Fn::Sub": "https://urmia-export-${AWS::AccountId}-${AWS::Region}.auth.${AWS::Region}.amazoncognito.com"
+      }
+    },
+    "AdminExportUrl": {
+      "Value": {
+        "Fn::Sub": "${Api.ApiEndpoint}/admin/responses.csv"
       }
     }
   }

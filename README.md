@@ -10,6 +10,7 @@ Repository: https://github.com/billdestein/urmia-survey (public).
 
 ## Structure
 
+- `admin.html`: invite-only sign-in and CSV download page.
 - `index.html`: supplied single-file TriCheck survey prototype, with mobile viewport metadata.
 - `backend/`: Lambda handlers, deployable CloudFormation template, signed CSV export helper, and automated tests.
 - `docs/api-contract.md`: proposed request and export contract.

@@ -56,10 +56,46 @@ for name,handler,actions,path,method,auth,timeout in [
     resources[name+'Permission']={'Type':'AWS::Lambda::Permission','Properties':{'FunctionName':ref(name),
         'Action':'lambda:InvokeFunction','Principal':'apigateway.amazonaws.com',
         'SourceArn':sub('arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/'+method+path)}}
+# Dedicated, invite-only browser login; no client secret in the static page.
+callback='https://billdestein.github.io/urmia-survey/admin.html'
+resources['AdminPool']={'Type':'AWS::Cognito::UserPool','Properties':{
+    'UserPoolName':sub('${AWS::StackName}-admins'), 'AdminCreateUserConfig':{'AllowAdminCreateUserOnly':True},
+    'UsernameAttributes':['email'], 'AutoVerifiedAttributes':['email'],
+    'UsernameConfiguration':{'CaseSensitive':False},
+    'Policies':{'PasswordPolicy':{'MinimumLength':12,'RequireLowercase':True,'RequireUppercase':True,'RequireNumbers':True,'RequireSymbols':True,'TemporaryPasswordValidityDays':7}},
+    'AccountRecoverySetting':{'RecoveryMechanisms':[{'Name':'verified_email','Priority':1}]}}}
+resources['AdminScope']={'Type':'AWS::Cognito::UserPoolResourceServer','Properties':{
+    'UserPoolId':ref('AdminPool'),'Identifier':'urmia-export','Name':'Survey exports',
+    'Scopes':[{'ScopeName':'download','ScopeDescription':'Download survey response CSV'}]}}
+resources['AdminClient']={'Type':'AWS::Cognito::UserPoolClient','DependsOn':'AdminScope','Properties':{
+    'UserPoolId':ref('AdminPool'),'ClientName':'Survey export page','GenerateSecret':False,
+    'AllowedOAuthFlowsUserPoolClient':True,'AllowedOAuthFlows':['code'],
+    'AllowedOAuthScopes':['openid','email','urmia-export/download'],'SupportedIdentityProviders':['COGNITO'],
+    'CallbackURLs':[callback],'LogoutURLs':[callback],'PreventUserExistenceErrors':'ENABLED',
+    'AccessTokenValidity':15,'IdTokenValidity':15,'RefreshTokenValidity':1,
+    'TokenValidityUnits':{'AccessToken':'minutes','IdToken':'minutes','RefreshToken':'days'},
+    'EnableTokenRevocation':True}}
+resources['AdminDomain']={'Type':'AWS::Cognito::UserPoolDomain','Properties':{
+    'UserPoolId':ref('AdminPool'),'Domain':sub('urmia-export-${AWS::AccountId}-${AWS::Region}')}}
+resources['AdminAuthorizer']={'Type':'AWS::ApiGatewayV2::Authorizer','Properties':{
+    'ApiId':ref('Api'),'AuthorizerType':'JWT','Name':'InviteOnlyAdmins','IdentitySource':['$request.header.Authorization'],
+    'JwtConfiguration':{'Audience':[ref('AdminClient')],
+        'Issuer':sub('https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminPool}')}}}
+resources['AdminRoute']={'Type':'AWS::ApiGatewayV2::Route','Properties':{'ApiId':ref('Api'),
+    'RouteKey':'GET /admin/responses.csv','AuthorizationType':'JWT','AuthorizerId':ref('AdminAuthorizer'),
+    'AuthorizationScopes':['urmia-export/download'],
+    'Target':{'Fn::Join':['/',['integrations',ref('ExportIntegration')]]}}}
+resources['AdminPermission']={'Type':'AWS::Lambda::Permission','Properties':{'FunctionName':ref('Export'),
+    'Action':'lambda:InvokeFunction','Principal':'apigateway.amazonaws.com',
+    'SourceArn':sub('arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/GET/admin/responses.csv')}}
+resources['Export']['Properties']['Environment']['Variables']['ADMIN_CLIENT_ID']=ref('AdminClient')
+resources['Api']['Properties']['CorsConfiguration']['AllowMethods']=['POST','GET']
+resources['Api']['Properties']['CorsConfiguration']['AllowHeaders'].append('authorization')
 template={'AWSTemplateFormatVersion':'2010-09-09','Description':'URMIA survey HTTP API, Lambda, and DynamoDB',
  'Parameters':{'SurveyOpen':{'Type':'String','Default':'true','AllowedValues':['true','false']}},
  'Resources':resources,'Outputs':{'SubmitUrl':{'Value':sub('${Api.ApiEndpoint}/responses')},
  'ExportUrl':{'Value':sub('${Api.ApiEndpoint}/responses.csv')},'TableName':{'Value':ref('Table')},
  'ExportInvokeArn':{'Value':sub('arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/$default/GET/responses.csv')}}}
+template['Outputs'].update({'AdminPoolId':{'Value':ref('AdminPool')},'AdminClientId':{'Value':ref('AdminClient')}, 'AdminLoginUrl':{'Value':sub('https://urmia-export-${AWS::AccountId}-${AWS::Region}.auth.${AWS::Region}.amazoncognito.com')}, 'AdminExportUrl':{'Value':sub('${Api.ApiEndpoint}/admin/responses.csv')}})
 (ROOT/'template.json').write_text(json.dumps(template,indent=2)+'\n')
 print('Generated schema and CloudFormation template from survey choices.')

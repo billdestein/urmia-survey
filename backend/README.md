@@ -48,7 +48,7 @@ CSV exports neutralize spreadsheet formulas and quote commas, quotes, and newlin
 - DynamoDB encryption and point-in-time recovery are enabled. The table is retained if the stack is deleted. Responses have no automatic expiration; decide a retention period before collecting real data.
 - Logs expire after 14 days. Handlers do not log answers or contact information.
 - CORS allows the public GitHub Pages origin. CORS does not prevent direct API calls. API throttling and Lambda concurrency limits bound traffic but do not provide bot protection or a spending cap.
-- This first version has no CAPTCHA or administrator browser UI. IAM exports use local AWS credentials, including SSO sessions.
+- There is no CAPTCHA. Browser exports use invite-only Cognito login; IAM exports use local AWS credentials, including SSO sessions.
 - Deployment requires enough regional Lambda concurrency quota for the two reserved allocations (five each).
 
 ## Verify
@@ -60,3 +60,17 @@ python3 -m unittest discover -s backend/tests -v
 After deployment, verify a valid POST, invalid POST, same-key retry, unsigned export rejection, signed CSV download, and mobile frontend submission. Keep test records out of the final analysis.
 
 AWS references: [Python Lambda runtime](https://docs.aws.amazon.com/lambda/latest/dg/lambda-python.html) and [HTTP API IAM authorization](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-access-control-iam.html).
+
+## Browser export page
+
+Teammates can use https://billdestein.github.io/urmia-survey/admin.html to sign in and download a CSV. Cognito accounts are invite-only; public self-registration is disabled. The page uses authorization code login with PKCE, a dedicated export scope, and a 15-minute access token. Access tokens stay in page memory, so reloading requires signing in again. The original IAM export endpoint still works.
+
+After the project owner specifies recipients and authorizes invitation emails, create each account:
+
+```sh
+aws cognito-idp admin-create-user --user-pool-id POOL_ID --username TEAMMATE_EMAIL --user-attributes Name=email,Value=TEAMMATE_EMAIL Name=email_verified,Value=true --desired-delivery-mediums EMAIL --profile default --region us-west-2
+```
+
+The pool ID is in the `AdminPoolId` stack output. Invitations contain a temporary password; recipients choose their own password at first sign-in. Each invited account can download all survey answers and optional contact details. For immediate access removal, delete the Cognito user and disable the browser export route if existing 15-minute access tokens must also be stopped; JWT validation alone does not consult user status on every request.
+
+AWS references: [Cognito PKCE](https://docs.aws.amazon.com/cognito/latest/developerguide/using-pkce-in-authorization-code.html), [API Gateway JWT authorization](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html).

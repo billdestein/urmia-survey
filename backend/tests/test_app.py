@@ -66,11 +66,24 @@ class BackendTests(unittest.TestCase):
         app.TABLE.scan.return_value={'Items':[{'q8':'x'*(app.MAX_CSV+1)}]}
         event={'requestContext':{'authorizer':{'iam':{'userArn':'admin'}}}}
         self.assertEqual(app.export(event,None)['statusCode'],413)
+    def test_browser_export_checks_scope_token_type_and_client(self):
+        from unittest.mock import patch
+        app.TABLE.scan.return_value={'Items':[]}
+        good={'token_use':'access','scope':'openid urmia-export/download','client_id':'expected'}
+        with patch.dict(app.os.environ, {'ADMIN_CLIENT_ID':'expected'}):
+            for claims,status in [(good,200),(dict(good,scope='openid'),403),(dict(good,token_use='id'),403),(dict(good,client_id='other'),403)]:
+                event={'requestContext':{'authorizer':{'jwt':{'claims':claims}}}}
+                self.assertEqual(app.export(event,None)['statusCode'],status)
+
     def test_template_routes_and_permissions(self):
         t=json.loads((Path(__file__).resolve().parents[1]/'template.json').read_text())['Resources']
         self.assertEqual(t['ExportRoute']['Properties']['AuthorizationType'],'AWS_IAM')
         self.assertEqual(t['SubmitRoute']['Properties']['AuthorizationType'],'NONE')
         self.assertEqual(t['Table']['DeletionPolicy'],'Retain')
+        self.assertTrue(t['AdminPool']['Properties']['AdminCreateUserConfig']['AllowAdminCreateUserOnly'])
+        self.assertFalse(t['AdminClient']['Properties']['GenerateSecret'])
+        self.assertEqual(t['AdminRoute']['Properties']['AuthorizationType'],'JWT')
+        self.assertEqual(t['AdminRoute']['Properties']['AuthorizationScopes'],['urmia-export/download'])
         self.assertEqual(t['ExportRole']['Properties']['Policies'][0]['PolicyDocument']['Statement'][0]['Action'],['dynamodb:Scan'])
 
 if __name__=='__main__': unittest.main()

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>TriCheck | Survey exports</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#0b1b33;background:#f6f8fb}body{margin:0;padding:24px}main{max-width:520px;margin:8vh auto;background:white;border:1px solid #dde2ea;border-radius:16px;padding:32px}h1{font-size:2rem;line-height:1.15}p{line-height:1.6}.brand{font-weight:800}button{font:inherit;border:0;border-radius:6px;padding:14px 20px;cursor:pointer;background:#0b1b33;color:white;font-weight:700;margin:4px 8px 4px 0}button:disabled{opacity:.6;cursor:wait}button:focus-visible{outline:3px solid #4c8c1e;outline-offset:3px}#signout{background:#edf1f5;color:#0b1b33}[hidden]{display:none!important}#status{min-height:3em;color:#475569}
+</style>
+</head>
+<body><main>
+<p class="brand">TriCheck · URMIA</p><h1>Survey responses</h1>
+<p>Sign in with your team account, then download the survey answers as a spreadsheet file.</p>
+<button id="signin">Sign in</button><button id="download" hidden>Download CSV</button><button id="signout" hidden>Sign out</button>
+<p id="status" role="status" aria-live="polite">Access is available to invited teammates. Contact the survey owner if you need an account.</p>
+</main>
+<script>
+(async () => {
+'use strict';
+const config = { domain: 'https://urmia-export-993351246435-us-west-2.auth.us-west-2.amazoncognito.com', clientId: '6m1r6p0h49422jonp5bram9rc5', exportUrl: 'https://me8spxlst4.execute-api.us-west-2.amazonaws.com/admin/responses.csv' };
+const callback = location.origin + location.pathname;
+const signin = document.getElementById('signin'), download = document.getElementById('download'), signout = document.getElementById('signout'), status = document.getElementById('status');
+let token = '', expiresAt = 0;
+const base64url = bytes => btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
+const random = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
+function render() { const ready = token && Date.now() < expiresAt; signin.hidden = !!ready; download.hidden = !ready; signout.hidden = !ready; }
+function clear() { token = ''; expiresAt = 0; sessionStorage.removeItem('urmia-login'); render(); }
+signin.addEventListener('click', async () => {
+  signin.disabled = true;
+  try {
+    const verifier = random(), state = random();
+    const challenge = base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
+    sessionStorage.setItem('urmia-login', JSON.stringify({verifier,state,created:Date.now()}));
+    const params = new URLSearchParams({response_type:'code',client_id:config.clientId,redirect_uri:callback,scope:'openid email urmia-export/download',state,code_challenge:challenge,code_challenge_method:'S256'});
+    location.assign(config.domain + '/oauth2/authorize?' + params);
+  } catch { status.textContent = 'Sign-in could not start. Please allow browser storage and try again.'; signin.disabled = false; }
+});
+signout.addEventListener('click', () => { clear(); location.assign(config.domain + '/logout?' + new URLSearchParams({client_id:config.clientId,logout_uri:callback})); });
+download.addEventListener('click', async () => {
+  if (Date.now() >= expiresAt) { clear(); status.textContent = 'Your sign-in has expired. Please sign in again.'; return; }
+  download.disabled = true; status.textContent = 'Preparing your download…';
+  try {
+    const result = await fetch(config.exportUrl,{headers:{Authorization:'Bearer '+token},cache:'no-store',signal:AbortSignal.timeout(65000)});
+    if (result.status === 401 || result.status === 403) { clear(); throw new Error('Please sign in again to download the responses.'); }
+    if (!result.ok) throw new Error('The download is unavailable right now. Please try again or contact the survey owner.');
+    const url = URL.createObjectURL(await result.blob()), link = document.createElement('a');
+    link.href = url; link.download = 'urmia-responses.csv'; document.body.append(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(url),10000);
+    status.textContent = 'Your download is ready. Open urmia-responses.csv in Excel or another spreadsheet app.';
+  } catch (error) { status.textContent = error instanceof TypeError || error.name === 'TimeoutError' ? 'Check your connection and try downloading again.' : error.message; }
+  finally { download.disabled = false; }
+});
+const params = new URLSearchParams(location.search);
+if (params.has('code') || params.has('error')) {
+  history.replaceState(null,'',callback);
+  try {
+    const login = JSON.parse(sessionStorage.getItem('urmia-login') || 'null');
+    sessionStorage.removeItem('urmia-login');
+    if (!login || params.get('state') !== login.state || Date.now()-login.created > 600000) throw new Error('Sign-in expired or could not be verified. Please try again.');
+    if (params.has('error')) throw new Error('Sign-in was cancelled or unsuccessful. Please try again.');
+    const result = await fetch(config.domain + '/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',client_id:config.clientId,redirect_uri:callback,code:params.get('code'),code_verifier:login.verifier}),signal:AbortSignal.timeout(20000)});
+    if (!result.ok) throw new Error('Sign-in could not finish. Please try again.');
+    const tokens = await result.json();
+    if (!tokens.access_token || !tokens.expires_in) throw new Error('Sign-in could not finish. Please try again.');
+    token = tokens.access_token; expiresAt = Date.now()+tokens.expires_in*1000;
+    status.textContent = 'You’re signed in. Click Download CSV to get the latest survey responses.';
+  } catch (error) { clear(); status.textContent = error.message; }
+}
+render();
+})();
+</script></body></html>
