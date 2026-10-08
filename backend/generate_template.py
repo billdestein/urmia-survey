@@ -59,7 +59,7 @@ for name,handler,actions,path,method,auth,timeout in [
 # Dedicated, invite-only browser login; no client secret in the static page.
 callback='https://billdestein.github.io/urmia-survey/admin.html'
 resources['AdminPool']={'Type':'AWS::Cognito::UserPool','Properties':{
-    'UserPoolName':sub('${AWS::StackName}-admins'), 'AdminCreateUserConfig':{'AllowAdminCreateUserOnly':True},
+    'UserPoolName':sub('${AWS::StackName}-admins'), 'AdminCreateUserConfig':{'AllowAdminCreateUserOnly':True,'InviteMessageTemplate':{'EmailSubject':'Your TriCheck survey export access','EmailMessage':'You have been invited to download the URMIA survey responses.<br><br>Open <a href="https://billdestein.github.io/urmia-survey/admin.html">the survey export page</a> and click Sign in.<br><br>Email: {username}<br>Temporary password: {####}<br><br>You will choose your own password the first time you sign in. This invitation expires in seven days.'}},
     'UsernameAttributes':['email'], 'AutoVerifiedAttributes':['email'],
     'UsernameConfiguration':{'CaseSensitive':False},
     'Policies':{'PasswordPolicy':{'MinimumLength':12,'RequireLowercase':True,'RequireUppercase':True,'RequireNumbers':True,'RequireSymbols':True,'TemporaryPasswordValidityDays':7}},
