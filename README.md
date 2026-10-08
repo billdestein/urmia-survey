@@ -4,14 +4,14 @@ Brokermatic.ai postcard QR codes will link to a mobile-friendly, single-file sur
 
 ## Status
 
-The supplied TriCheck URMIA survey prototype is now in `index.html`, with its questions and design preserved. It validates answers and displays a sample JSON payload locally; it does not send or store responses. API URL, backend implementation, authentication configuration, final privacy/consent review, and deployment are pending. No AWS resources are deployed.
+The supplied TriCheck URMIA survey prototype is now in `index.html`, with its questions and design preserved. It validates answers and displays a sample JSON payload locally; it does not send or store responses. The AWS backend is implemented with public POST collection and IAM-authenticated CSV export. AWS deployment, frontend connection, and final privacy/consent review are pending. No AWS resources are deployed.
 
 Repository: https://github.com/billdestein/urmia-survey (public).
 
 ## Structure
 
 - `index.html`: supplied single-file TriCheck survey prototype, with mobile viewport metadata.
-- `backend/README.md`: backend implementation requirements.
+- `backend/`: Lambda handlers, deployable CloudFormation template, signed CSV export helper, and automated tests.
 - `docs/api-contract.md`: proposed request and export contract.
 - `docs/pages-workflow.yml`: template for a manually triggered GitHub Pages deployment.
 
@@ -19,7 +19,7 @@ Repository: https://github.com/billdestein/urmia-survey (public).
 
 1. Repository hosted under `billdestein/urmia-survey` on GitHub.com.
 2. Review the supplied survey questions and approve privacy/consent copy.
-3. Implement and deploy the backend and authenticated export.
+3. Choose an AWS profile and region, then deploy the backend using `backend/README.md`.
 4. Connect `index.html` to the POST API; show success only after storage is confirmed. Align the API contract with the prototype payload.
 5. GitHub Pages publishes directly from the root of `main` at https://billdestein.github.io/urmia-survey/. The workflow template is optional and inactive; branch-based publishing does not require it.
 6. Verify mobile submission and export before printing the final QR-code URL.

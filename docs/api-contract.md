@@ -1,24 +1,21 @@
-# Proposed API contract
-
-This contract is a starting point to confirm before implementation.
+# API contract
 
 ## POST /responses
 
-Public endpoint accepting `Content-Type: application/json`:
+Public JSON endpoint using the existing flat prototype payload. Required fields are `q1` through `q7` (exact values in `backend/schema.json`) and boolean `interview_optin`. `q8` is optional free text. Optional fields are `src`, `q7a`, `role`, `vendor_count`, `institution_type`, `name`, `email`, and `institution`.
 
-```json
-{
-  "surveyVersion": "TBD",
-  "answers": {}
-}
-```
+A name and valid email are required when interview opt-in is true. Contact fields are cleared when false; `q7a` is cleared unless a dedicated system is selected. Unknown fields are rejected. Client `submitted_at` and `hot_count` are accepted for prototype compatibility but replaced with server-generated values. Maximum body size is 24 KB; free text is limited to 2,000 characters; other limits are in `backend/app.py`.
 
-`answers` keys and validation rules remain unspecified until the survey questions are provided. The server should generate `responseId` and `submittedAt` and validate the survey version. Do not accept arbitrary answer keys once the schema is approved.
+Send a UUID `Idempotency-Key` header. Repeating the same normalized answers under that key returns the original ID; changing answers under it returns 409. Omitting the key generates a new ID for every request.
 
-Proposed success: `201` with `{ "responseId": "server-generated-id" }`. Invalid input returns `400`; throttling returns `429`. The frontend must preserve answers on failure and display accessible status messages. Decide retry/idempotency behavior before implementation.
+Responses:
+
+- 201 saved, or 200 for a previously saved identical retry: `{ "responseId": "..." }`.
+- 400 invalid answers; 409 conflicting retry; 413 oversized body; 415 wrong media type.
+- 410 survey closed; 429 API throttled; 503 storage unavailable.
 
 ## GET /responses.csv
 
-Requires configured authentication. Return `text/csv; charset=utf-8` with a download filename. Include one row per stored response. Final columns depend on the approved question schema; response ID and server submission timestamp are proposed metadata columns.
+Requires an AWS Signature Version 4 request by an IAM principal with `execute-api:Invoke` permission on the route. There is no public export token or frontend secret.
 
-No admin token or credentials may be included in the public HTML. Confirm the authentication method, export size limits, retention, and privacy requirements before deployment.
+Returns `text/csv; charset=utf-8`, a download filename, and `Cache-Control: no-store`. Columns are `response_id`, server `submitted_at`, prototype answer/contact fields, and server-calculated `hot_count`. Missing optional values are empty. Text that could become a spreadsheet formula is prefixed with an apostrophe. The complete download is limited to 4 MB; oversized or interrupted scans return a JSON error without partial CSV.

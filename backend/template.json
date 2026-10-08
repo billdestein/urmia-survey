@@ -1,0 +1,383 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "URMIA survey HTTP API, Lambda, and DynamoDB",
+  "Parameters": {
+    "SurveyOpen": {
+      "Type": "String",
+      "Default": "true",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    }
+  },
+  "Resources": {
+    "Table": {
+      "Type": "AWS::DynamoDB::Table",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "response_id",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "response_id",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        }
+      }
+    },
+    "Api": {
+      "Type": "AWS::ApiGatewayV2::Api",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}"
+        },
+        "ProtocolType": "HTTP",
+        "CorsConfiguration": {
+          "AllowOrigins": [
+            "https://billdestein.github.io"
+          ],
+          "AllowMethods": [
+            "POST"
+          ],
+          "AllowHeaders": [
+            "content-type",
+            "idempotency-key"
+          ],
+          "MaxAge": 600
+        }
+      }
+    },
+    "Stage": {
+      "Type": "AWS::ApiGatewayV2::Stage",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "StageName": "$default",
+        "AutoDeploy": true,
+        "DefaultRouteSettings": {
+          "ThrottlingBurstLimit": 10,
+          "ThrottlingRateLimit": 5
+        }
+      }
+    },
+    "SubmitRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Handler",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:GetItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Table",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-Submit:*"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "SubmitLog": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-Submit"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "Submit": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "SubmitLog",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-Submit"
+        },
+        "Runtime": "python3.13",
+        "Handler": "index.submit",
+        "Role": {
+          "Fn::GetAtt": [
+            "SubmitRole",
+            "Arn"
+          ]
+        },
+        "Timeout": 15,
+        "MemorySize": 256,
+        "ReservedConcurrentExecutions": 5,
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Ref": "Table"
+            },
+            "SURVEY_OPEN": {
+              "Ref": "SurveyOpen"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "\"\"\"Survey handlers; API Gateway HTTP API v2 events.\"\"\"\nimport base64\nimport csv\nimport hashlib\nimport io\nimport json\nimport os\nimport re\nimport uuid\nfrom datetime import datetime, timezone\n\n# Exact choices from the supplied survey, populated by generate_template.py.\nCHOICES = {'q1': ['Same day', '2\u20135 days', '1\u20132 weeks', \"We don't really know\"], 'q2': ['The contract', 'A standard exhibit', 'A campus policy', \"Someone's head\"], 'q3': ['Risk', 'Procurement', 'The hiring department', 'Whoever has time'], 'q4': [\"Risk, and it's documented\", 'A department head, informally', 'Whoever is asked', 'Nobody \u2014 we just proceed'], 'q5': ['System status', 'Email from Risk', 'They ask', \"They don't check\"], 'q6': ['0\u201310', '10\u201350', '50\u2013200', '200+'], 'q7': ['A dedicated system', 'Our ERP or procurement platform', 'Spreadsheets and email', \"It's not tracked in one place\"], 'role': ['', 'Risk Management / Insurance', 'Procurement / Supply Chain', 'Treasury / Finance', 'Facilities / Capital Projects', 'Other'], 'vendor_count': ['', 'Under 50', '50\u2013200', '200\u20131,000', '1,000+'], 'institution_type': ['', 'Public', 'Private', 'Other (health system, agency, etc.)']}\nTABLE = None\nMAX_BODY = 24000\nMAX_CSV = 4000000\nTEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,\n               'email': 254, 'institution': 300}\nCOLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [\n    'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',\n    'interview_optin', 'name', 'email', 'institution']\n\n\ndef table():\n    global TABLE\n    if TABLE is None:\n        import boto3\n        TABLE = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])\n    return TABLE\n\n\ndef response(status, body):\n    return {'statusCode': status, 'headers': {'Content-Type': 'application/json',\n            'Cache-Control': 'no-store'}, 'body': json.dumps(body)}\n\n\ndef validate(data):\n    if not isinstance(data, dict):\n        raise ValueError('Expected a JSON object.')\n    allowed = set(COLUMNS) - {'response_id'}\n    if set(data) - allowed:\n        raise ValueError('Unexpected fields.')\n    cleaned = {}\n    for field, options in CHOICES.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or value not in options:\n            raise ValueError(f'Invalid or missing {field}.')\n        cleaned[field] = value\n    for field, limit in TEXT_LIMITS.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or len(value) > limit or '\\x00' in value:\n            raise ValueError(f'Invalid {field} (maximum {limit} characters).')\n        cleaned[field] = value.strip()\n    if type(data.get('interview_optin')) is not bool:\n        raise ValueError('interview_optin must be true or false.')\n    cleaned['interview_optin'] = data['interview_optin']\n    if cleaned['interview_optin']:\n        if not cleaned['name'] or not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', cleaned['email']):\n            raise ValueError('Name and valid email are required for an interview.')\n    else:\n        for field in ('name', 'email', 'institution'):\n            cleaned[field] = ''\n    if cleaned['q7'] != 'A dedicated system':\n        cleaned['q7a'] = ''\n    cleaned['hot_count'] = sum(cleaned[f'q{i}'] == CHOICES[f'q{i}'][-1] for i in range(1, 8))\n    return cleaned\n\n\ndef submit(event, context):\n    if os.environ.get('SURVEY_OPEN', 'true') != 'true':\n        return response(410, {'error': 'The survey is closed.'})\n    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}\n    if headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':\n        return response(415, {'error': 'Use application/json.'})\n    try:\n        raw = event.get('body') or ''\n        if len(raw) > MAX_BODY * 2:\n            return response(413, {'error': 'Response is too large.'})\n        raw = base64.b64decode(raw, validate=True) if event.get('isBase64Encoded') else raw.encode('utf-8')\n        if len(raw) > MAX_BODY:\n            return response(413, {'error': 'Response is too large.'})\n        data = validate(json.loads(raw))\n        key = headers.get('idempotency-key', '')\n        if key and not re.fullmatch(r'[A-Za-z0-9-]{16,100}', key):\n            raise ValueError('Invalid Idempotency-Key.')\n    except (ValueError, TypeError, UnicodeError):\n        return response(400, {'error': 'Invalid response. Check required answers and field lengths.'})\n    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()\n    response_id = key or str(uuid.uuid4())\n    item = dict(data, response_id=response_id, submitted_at=datetime.now(timezone.utc).isoformat(),\n                payload_hash=fingerprint)\n    try:\n        table().put_item(Item=item, ConditionExpression='attribute_not_exists(response_id)')\n    except Exception as exc:\n        if getattr(exc, 'response', {}).get('Error', {}).get('Code') == 'ConditionalCheckFailedException':\n            try:\n                existing = table().get_item(Key={'response_id': response_id}, ConsistentRead=True).get('Item', {})\n                if existing.get('payload_hash') == fingerprint:\n                    return response(200, {'responseId': response_id})\n                return response(409, {'error': 'Retry key already used for different answers.'})\n            except Exception:\n                pass\n        return response(503, {'error': 'Unable to save right now. Please retry.'})\n    return response(201, {'responseId': response_id})\n\n\ndef csv_cell(value):\n    if isinstance(value, bool):\n        return 'true' if value else 'false'\n    text = str(value)\n    if text.lstrip().startswith(('=', '+', '-', '@', '\\t', '\\r', '\\n')) or text.startswith(('\\t', '\\r', '\\n')):\n        text = \"'\" + text\n    return text\n\n\ndef export(event, context):\n    # API Gateway rejects unsigned requests; also reject events without IAM identity.\n    if not event.get('requestContext', {}).get('authorizer', {}).get('iam', {}).get('userArn'):\n        return response(403, {'error': 'Authentication required.'})\n    output = io.StringIO(newline='')\n    writer = csv.writer(output)\n    writer.writerow(COLUMNS)\n    options = {'ConsistentRead': True}\n    size = len(output.getvalue().encode('utf-8'))\n    try:\n        while True:\n            page = table().scan(**options)\n            for item in page.get('Items', []):\n                before = output.tell()\n                writer.writerow([csv_cell(item.get(column, '')) for column in COLUMNS])\n                size += len(output.getvalue()[before:].encode('utf-8'))\n                if size > MAX_CSV:\n                    return response(413, {'error': 'Export exceeds download limit; use an offline DynamoDB export.'})\n            if not page.get('LastEvaluatedKey'):\n                break\n            options['ExclusiveStartKey'] = page['LastEvaluatedKey']\n            if context and context.get_remaining_time_in_millis() < 5000:\n                return response(503, {'error': 'Export timed out; retry or use an offline export.'})\n    except Exception:\n        return response(503, {'error': 'Unable to export right now.'})\n    return {'statusCode': 200, 'headers': {'Content-Type': 'text/csv; charset=utf-8',\n            'Content-Disposition': 'attachment; filename=\"urmia-responses.csv\"',\n            'Cache-Control': 'no-store'}, 'body': output.getvalue()}\n"
+        }
+      }
+    },
+    "SubmitIntegration": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Fn::GetAtt": [
+            "Submit",
+            "Arn"
+          ]
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "SubmitRoute": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "RouteKey": "POST /responses",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "/",
+            [
+              "integrations",
+              {
+                "Ref": "SubmitIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "SubmitPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Submit"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/POST/responses"
+        }
+      }
+    },
+    "ExportRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Handler",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:Scan"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Table",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-Export:*"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ExportLog": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-Export"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "Export": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "ExportLog",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-Export"
+        },
+        "Runtime": "python3.13",
+        "Handler": "index.export",
+        "Role": {
+          "Fn::GetAtt": [
+            "ExportRole",
+            "Arn"
+          ]
+        },
+        "Timeout": 60,
+        "MemorySize": 256,
+        "ReservedConcurrentExecutions": 5,
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Ref": "Table"
+            },
+            "SURVEY_OPEN": {
+              "Ref": "SurveyOpen"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "\"\"\"Survey handlers; API Gateway HTTP API v2 events.\"\"\"\nimport base64\nimport csv\nimport hashlib\nimport io\nimport json\nimport os\nimport re\nimport uuid\nfrom datetime import datetime, timezone\n\n# Exact choices from the supplied survey, populated by generate_template.py.\nCHOICES = {'q1': ['Same day', '2\u20135 days', '1\u20132 weeks', \"We don't really know\"], 'q2': ['The contract', 'A standard exhibit', 'A campus policy', \"Someone's head\"], 'q3': ['Risk', 'Procurement', 'The hiring department', 'Whoever has time'], 'q4': [\"Risk, and it's documented\", 'A department head, informally', 'Whoever is asked', 'Nobody \u2014 we just proceed'], 'q5': ['System status', 'Email from Risk', 'They ask', \"They don't check\"], 'q6': ['0\u201310', '10\u201350', '50\u2013200', '200+'], 'q7': ['A dedicated system', 'Our ERP or procurement platform', 'Spreadsheets and email', \"It's not tracked in one place\"], 'role': ['', 'Risk Management / Insurance', 'Procurement / Supply Chain', 'Treasury / Finance', 'Facilities / Capital Projects', 'Other'], 'vendor_count': ['', 'Under 50', '50\u2013200', '200\u20131,000', '1,000+'], 'institution_type': ['', 'Public', 'Private', 'Other (health system, agency, etc.)']}\nTABLE = None\nMAX_BODY = 24000\nMAX_CSV = 4000000\nTEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,\n               'email': 254, 'institution': 300}\nCOLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [\n    'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',\n    'interview_optin', 'name', 'email', 'institution']\n\n\ndef table():\n    global TABLE\n    if TABLE is None:\n        import boto3\n        TABLE = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])\n    return TABLE\n\n\ndef response(status, body):\n    return {'statusCode': status, 'headers': {'Content-Type': 'application/json',\n            'Cache-Control': 'no-store'}, 'body': json.dumps(body)}\n\n\ndef validate(data):\n    if not isinstance(data, dict):\n        raise ValueError('Expected a JSON object.')\n    allowed = set(COLUMNS) - {'response_id'}\n    if set(data) - allowed:\n        raise ValueError('Unexpected fields.')\n    cleaned = {}\n    for field, options in CHOICES.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or value not in options:\n            raise ValueError(f'Invalid or missing {field}.')\n        cleaned[field] = value\n    for field, limit in TEXT_LIMITS.items():\n        value = data.get(field, '')\n        if not isinstance(value, str) or len(value) > limit or '\\x00' in value:\n            raise ValueError(f'Invalid {field} (maximum {limit} characters).')\n        cleaned[field] = value.strip()\n    if type(data.get('interview_optin')) is not bool:\n        raise ValueError('interview_optin must be true or false.')\n    cleaned['interview_optin'] = data['interview_optin']\n    if cleaned['interview_optin']:\n        if not cleaned['name'] or not re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', cleaned['email']):\n            raise ValueError('Name and valid email are required for an interview.')\n    else:\n        for field in ('name', 'email', 'institution'):\n            cleaned[field] = ''\n    if cleaned['q7'] != 'A dedicated system':\n        cleaned['q7a'] = ''\n    cleaned['hot_count'] = sum(cleaned[f'q{i}'] == CHOICES[f'q{i}'][-1] for i in range(1, 8))\n    return cleaned\n\n\ndef submit(event, context):\n    if os.environ.get('SURVEY_OPEN', 'true') != 'true':\n        return response(410, {'error': 'The survey is closed.'})\n    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}\n    if headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':\n        return response(415, {'error': 'Use application/json.'})\n    try:\n        raw = event.get('body') or ''\n        if len(raw) > MAX_BODY * 2:\n            return response(413, {'error': 'Response is too large.'})\n        raw = base64.b64decode(raw, validate=True) if event.get('isBase64Encoded') else raw.encode('utf-8')\n        if len(raw) > MAX_BODY:\n            return response(413, {'error': 'Response is too large.'})\n        data = validate(json.loads(raw))\n        key = headers.get('idempotency-key', '')\n        if key and not re.fullmatch(r'[A-Za-z0-9-]{16,100}', key):\n            raise ValueError('Invalid Idempotency-Key.')\n    except (ValueError, TypeError, UnicodeError):\n        return response(400, {'error': 'Invalid response. Check required answers and field lengths.'})\n    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()\n    response_id = key or str(uuid.uuid4())\n    item = dict(data, response_id=response_id, submitted_at=datetime.now(timezone.utc).isoformat(),\n                payload_hash=fingerprint)\n    try:\n        table().put_item(Item=item, ConditionExpression='attribute_not_exists(response_id)')\n    except Exception as exc:\n        if getattr(exc, 'response', {}).get('Error', {}).get('Code') == 'ConditionalCheckFailedException':\n            try:\n                existing = table().get_item(Key={'response_id': response_id}, ConsistentRead=True).get('Item', {})\n                if existing.get('payload_hash') == fingerprint:\n                    return response(200, {'responseId': response_id})\n                return response(409, {'error': 'Retry key already used for different answers.'})\n            except Exception:\n                pass\n        return response(503, {'error': 'Unable to save right now. Please retry.'})\n    return response(201, {'responseId': response_id})\n\n\ndef csv_cell(value):\n    if isinstance(value, bool):\n        return 'true' if value else 'false'\n    text = str(value)\n    if text.lstrip().startswith(('=', '+', '-', '@', '\\t', '\\r', '\\n')) or text.startswith(('\\t', '\\r', '\\n')):\n        text = \"'\" + text\n    return text\n\n\ndef export(event, context):\n    # API Gateway rejects unsigned requests; also reject events without IAM identity.\n    if not event.get('requestContext', {}).get('authorizer', {}).get('iam', {}).get('userArn'):\n        return response(403, {'error': 'Authentication required.'})\n    output = io.StringIO(newline='')\n    writer = csv.writer(output)\n    writer.writerow(COLUMNS)\n    options = {'ConsistentRead': True}\n    size = len(output.getvalue().encode('utf-8'))\n    try:\n        while True:\n            page = table().scan(**options)\n            for item in page.get('Items', []):\n                before = output.tell()\n                writer.writerow([csv_cell(item.get(column, '')) for column in COLUMNS])\n                size += len(output.getvalue()[before:].encode('utf-8'))\n                if size > MAX_CSV:\n                    return response(413, {'error': 'Export exceeds download limit; use an offline DynamoDB export.'})\n            if not page.get('LastEvaluatedKey'):\n                break\n            options['ExclusiveStartKey'] = page['LastEvaluatedKey']\n            if context and context.get_remaining_time_in_millis() < 5000:\n                return response(503, {'error': 'Export timed out; retry or use an offline export.'})\n    except Exception:\n        return response(503, {'error': 'Unable to export right now.'})\n    return {'statusCode': 200, 'headers': {'Content-Type': 'text/csv; charset=utf-8',\n            'Content-Disposition': 'attachment; filename=\"urmia-responses.csv\"',\n            'Cache-Control': 'no-store'}, 'body': output.getvalue()}\n"
+        }
+      }
+    },
+    "ExportIntegration": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Fn::GetAtt": [
+            "Export",
+            "Arn"
+          ]
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "ExportRoute": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "Api"
+        },
+        "RouteKey": "GET /responses.csv",
+        "AuthorizationType": "AWS_IAM",
+        "Target": {
+          "Fn::Join": [
+            "/",
+            [
+              "integrations",
+              {
+                "Ref": "ExportIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "ExportPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Export"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/GET/responses.csv"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "SubmitUrl": {
+      "Value": {
+        "Fn::Sub": "${Api.ApiEndpoint}/responses"
+      }
+    },
+    "ExportUrl": {
+      "Value": {
+        "Fn::Sub": "${Api.ApiEndpoint}/responses.csv"
+      }
+    },
+    "TableName": {
+      "Value": {
+        "Ref": "Table"
+      }
+    },
+    "ExportInvokeArn": {
+      "Value": {
+        "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/$default/GET/responses.csv"
+      }
+    }
+  }
+}

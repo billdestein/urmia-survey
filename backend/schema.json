@@ -1,0 +1,65 @@
+{
+  "q1": [
+    "Same day",
+    "2\u20135 days",
+    "1\u20132 weeks",
+    "We don't really know"
+  ],
+  "q2": [
+    "The contract",
+    "A standard exhibit",
+    "A campus policy",
+    "Someone's head"
+  ],
+  "q3": [
+    "Risk",
+    "Procurement",
+    "The hiring department",
+    "Whoever has time"
+  ],
+  "q4": [
+    "Risk, and it's documented",
+    "A department head, informally",
+    "Whoever is asked",
+    "Nobody \u2014 we just proceed"
+  ],
+  "q5": [
+    "System status",
+    "Email from Risk",
+    "They ask",
+    "They don't check"
+  ],
+  "q6": [
+    "0\u201310",
+    "10\u201350",
+    "50\u2013200",
+    "200+"
+  ],
+  "q7": [
+    "A dedicated system",
+    "Our ERP or procurement platform",
+    "Spreadsheets and email",
+    "It's not tracked in one place"
+  ],
+  "role": [
+    "",
+    "Risk Management / Insurance",
+    "Procurement / Supply Chain",
+    "Treasury / Finance",
+    "Facilities / Capital Projects",
+    "Other"
+  ],
+  "vendor_count": [
+    "",
+    "Under 50",
+    "50\u2013200",
+    "200\u20131,000",
+    "1,000+"
+  ],
+  "institution_type": [
+    "",
+    "Public",
+    "Private",
+    "Other (health system, agency, etc.)"
+  ]
+}
