@@ -96,6 +96,8 @@
   .optin span { font-size: 15px; line-height: 1.4; color: var(--panel-fg); }
   .contact { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
   @media (max-width: 560px) { .contact { grid-template-columns: 1fr; } }
+  .contact[hidden] { display: none; }
+  button.send:disabled { opacity: .65; cursor: wait; }
   .contact .full { grid-column: 1 / -1; }
   .contact input { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.25); color: var(--panel-fg); }
   .contact label.small { color: var(--panel-muted); }
@@ -213,14 +215,14 @@
         </div>
         <div class="sub" id="q7a_wrap" hidden>
           <label class="small" for="q7a_text">Which system?</label>
-          <input type="text" id="q7a_text" name="q7a" placeholder="e.g. Ebix, Origami, CertTrax, homegrown" autocomplete="off">
+          <input type="text" id="q7a_text" maxlength="200" name="q7a" placeholder="e.g. Ebix, Origami, CertTrax, homegrown" autocomplete="off">
         </div>
       </section>
 
       <section class="q" data-q="q8">
         <div class="head"><span class="n">8</span><h2 id="q8h">Where does it break most for you?</h2></div>
         <div class="sub">
-          <textarea id="q8" name="q8" placeholder="One sentence is plenty." aria-labelledby="q8h"></textarea>
+          <textarea id="q8" maxlength="2000" name="q8" placeholder="One sentence is plenty." aria-labelledby="q8h"></textarea>
         </div>
       </section>
 
@@ -268,9 +270,9 @@
           <p>If you'd walk us through how vendor clearance actually works at your school — a 20-minute call, on your calendar — we'll send a $20 Amazon gift card afterward as a thank-you. Not for saying anything nice about us. No pitch. We're here to listen.</p>
           <label class="optin"><input type="checkbox" id="optin" name="interview_optin"><span><b>I'd do a 20-minute call</b> to walk you through how this works at my school.</span></label>
           <div class="contact" id="contact" hidden>
-            <div><label class="small" for="name">Name</label><input type="text" id="name" name="name" autocomplete="name"></div>
-            <div><label class="small" for="email">Email</label><input type="email" id="email" name="email" autocomplete="email"></div>
-            <div class="full"><label class="small" for="institution">Institution (optional)</label><input type="text" id="institution" name="institution" autocomplete="organization"></div>
+            <div><label class="small" for="name">Name</label><input type="text" id="name" maxlength="200" name="name" autocomplete="name"></div>
+            <div><label class="small" for="email">Email</label><input type="email" id="email" maxlength="254" name="email" autocomplete="email"></div>
+            <div class="full"><label class="small" for="institution">Institution (optional)</label><input type="text" id="institution" maxlength="300" name="institution" autocomplete="organization"></div>
           </div>
           <div class="fine">Some institutions restrict gifts to employees. It's completely fine to decline the card and still do the call.</div>
         </div>
@@ -280,7 +282,7 @@
         <div class="count" id="count">0 of 7 answered</div>
         <button class="send" type="submit" id="send">Send my answers</button>
       </div>
-      <div class="err" id="err" hidden></div>
+      <div class="err" id="err" role="alert" hidden></div>
     </form>
   </main>
 
@@ -288,10 +290,6 @@
     <h2 id="thanks_h">Thanks.</h2>
     <p id="thanks_p"></p>
     <p class="sig">— Don &amp; Matt, TriCheck</p>
-    <details>
-      <summary>For the engineers: payload this submission would send</summary>
-      <pre id="payload"></pre>
-    </details>
   </section>
 
   <footer class="foot">
@@ -302,6 +300,11 @@
 
 <script>
 (function () {
+  const API_URL = 'https://me8spxlst4.execute-api.us-west-2.amazonaws.com/responses';
+  let retryKey = '';
+  let retryPayload = '';
+  let saving = false;
+  const send = document.getElementById('send');
   const form = document.getElementById('survey');
   const count = document.getElementById('count');
   const err = document.getElementById('err');
@@ -321,8 +324,9 @@
   form.addEventListener('change', refresh);
   refresh();
 
-  form.addEventListener('submit', function (e) {
+  form.addEventListener('submit', async function (e) {
     e.preventDefault();
+    if (saving) return;
     err.hidden = true;
     const missing = REQUIRED.filter(n => !form.querySelector(`input[name="${n}"]:checked`));
     if (missing.length) {
@@ -344,7 +348,6 @@
     let hot = 0;
     REQUIRED.forEach(n => { const el = form.querySelector(`input[name="${n}"]:checked`); if (el && el.hasAttribute('data-hot')) hot++; });
     const payload = {
-      submitted_at: new Date().toISOString(),
       src: data.src || 'direct',
       q1: data.q1, q2: data.q2, q3: data.q3, q4: data.q4, q5: data.q5, q6: data.q6, q7: data.q7,
       q7a: data.q7a || '', q8: data.q8 || '', hot_count: hot,
@@ -352,7 +355,42 @@
       interview_optin: optin,
       name: optin ? name : '', email: optin ? email : '', institution: optin ? (data.institution || '') : ''
     };
-    document.getElementById('payload').textContent = JSON.stringify(payload, null, 2);
+    const encoded = JSON.stringify(payload);
+    if (encoded !== retryPayload) {
+      retryPayload = encoded;
+      retryKey = crypto.randomUUID();
+    }
+    saving = true;
+    send.disabled = true;
+    send.textContent = 'Saving…';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const result = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': retryKey },
+        body: encoded,
+        signal: controller.signal
+      });
+      if (!result.ok) {
+        if (result.status === 410) throw new Error('This survey is now closed.');
+        if (result.status === 429) throw new Error('The survey is busy. Please wait a moment and try again.');
+        throw new Error('Your answers could not be saved. Please try again.');
+      }
+      const receipt = await result.json();
+      if (!receipt.responseId) throw new Error('We could not confirm your submission. Please try again.');
+    } catch (error) {
+      err.textContent = error.name === 'AbortError' || error instanceof TypeError
+        ? 'We could not confirm your submission. Check your connection and try again. Your answers are still here.'
+        : error.message;
+      err.hidden = false;
+      return;
+    } finally {
+      clearTimeout(timeout);
+      saving = false;
+      send.disabled = false;
+      send.textContent = 'Send my answers';
+    }
     document.getElementById('thanks_h').textContent = optin ? 'Thanks — we\'ll be in touch.' : 'Thanks.';
     document.getElementById('thanks_p').textContent = optin
       ? 'We\'ll email you within a few days to find twenty minutes that work for you.'

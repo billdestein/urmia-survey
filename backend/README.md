@@ -5,7 +5,11 @@ The deployment creates a pay-per-request DynamoDB table, two Python Lambda funct
 - Public `POST /responses`: validates the prototype's exact choices and field lengths, generates a server timestamp and response ID, and writes to DynamoDB.
 - IAM-authenticated `GET /responses.csv`: scans all pages and returns one CSV row per response. Each Lambda role has only its required table operations.
 
-No AWS resources have been deployed yet. The live HTML still runs in prototype mode until its POST URL and submission behavior are connected.
+Deployed in AWS account `993351246435`, region `us-west-2`, stack `urmia-survey`, using the local `default` profile. The connected frontend is prepared locally and awaits launch approval.
+
+Submission URL: https://me8spxlst4.execute-api.us-west-2.amazonaws.com/responses
+
+Authenticated export URL: https://me8spxlst4.execute-api.us-west-2.amazonaws.com/responses.csv
 
 ## Deploy
 
