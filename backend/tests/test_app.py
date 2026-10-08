@@ -32,6 +32,15 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(cleaned['name'],'')
         self.assertEqual(cleaned['email'],'')
         self.assertEqual(cleaned['q7a'],'')
+    def test_optional_phone_and_csv_order(self):
+        contact=dict(self.data,interview_optin=True,name='Test',email='test@example.com')
+        self.assertEqual(app.validate(contact)['phone'],'')
+        self.assertEqual(app.validate(dict(contact,phone=' +1 (555) 010-1234 '))['phone'],'+1 (555) 010-1234')
+        self.assertEqual(app.validate(dict(self.data,phone='555-010-1234'))['phone'],'')
+        with self.assertRaises(ValueError): app.validate(dict(contact,phone='x'*51))
+        self.assertEqual(app.COLUMNS[app.COLUMNS.index('email')+1],'phone')
+        self.assertEqual(app.COLUMNS[app.COLUMNS.index('phone')+1],'institution')
+
     def test_storage_error_is_not_success(self):
         app.TABLE.put_item.side_effect=RuntimeError('private internal details')
         result=app.submit(self.event,None)

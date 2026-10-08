@@ -15,10 +15,10 @@ TABLE = None
 MAX_BODY = 24000
 MAX_CSV = 4000000
 TEXT_LIMITS = {'src': 100, 'q7a': 200, 'q8': 2000, 'name': 200,
-               'email': 254, 'institution': 300}
+               'email': 254, 'phone': 50, 'institution': 300}
 COLUMNS = ['response_id', 'submitted_at', 'src'] + [f'q{i}' for i in range(1, 9)] + [
     'q7a', 'hot_count', 'role', 'vendor_count', 'institution_type',
-    'interview_optin', 'name', 'email', 'institution']
+    'interview_optin', 'name', 'email', 'phone', 'institution']
 
 
 def table():
@@ -58,7 +58,7 @@ def validate(data):
         if not cleaned['name'] or not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', cleaned['email']):
             raise ValueError('Name and valid email are required for an interview.')
     else:
-        for field in ('name', 'email', 'institution'):
+        for field in ('name', 'email', 'phone', 'institution'):
             cleaned[field] = ''
     if cleaned['q7'] != 'A dedicated system':
         cleaned['q7a'] = ''

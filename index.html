@@ -68,7 +68,7 @@
   .sub { margin-top: 12px; padding-left: calc(1.2em + 12px); }
   .sub[hidden] { display: none; }
   label.small { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-  input[type=text], input[type=email], textarea, select { width: 100%; font: inherit; font-size: 15px; color: var(--fg); background: var(--bg); border: 1.5px solid var(--rule); border-radius: 6px; padding: 11px 12px; }
+  input[type=text], input[type=email], input[type=tel], textarea, select { width: 100%; font: inherit; font-size: 15px; color: var(--fg); background: var(--bg); border: 1.5px solid var(--rule); border-radius: 6px; padding: 11px 12px; }
   input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-color: var(--fg); }
   textarea { min-height: 96px; resize: vertical; }
 
@@ -272,6 +272,7 @@
           <div class="contact" id="contact" hidden>
             <div><label class="small" for="name">Name</label><input type="text" id="name" maxlength="200" name="name" autocomplete="name"></div>
             <div><label class="small" for="email">Email</label><input type="email" id="email" maxlength="254" name="email" autocomplete="email"></div>
+            <div class="full"><label class="small" for="phone">Phone (optional)</label><input type="tel" id="phone" maxlength="50" name="phone" autocomplete="tel"></div>
             <div class="full"><label class="small" for="institution">Institution (optional)</label><input type="text" id="institution" maxlength="300" name="institution" autocomplete="organization"></div>
           </div>
           <div class="fine">Some institutions restrict gifts to employees. It's completely fine to decline the card and still do the call.</div>
@@ -353,7 +354,7 @@
       q7a: data.q7a || '', q8: data.q8 || '', hot_count: hot,
       role: data.role || '', vendor_count: data.vendor_count || '', institution_type: data.institution_type || '',
       interview_optin: optin,
-      name: optin ? name : '', email: optin ? email : '', institution: optin ? (data.institution || '') : ''
+      name: optin ? name : '', email: optin ? email : '', phone: optin ? (data.phone || '').trim() : '', institution: optin ? (data.institution || '') : ''
     };
     const encoded = JSON.stringify(payload);
     if (encoded !== retryPayload) {

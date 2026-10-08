@@ -2,9 +2,9 @@
 
 ## POST /responses
 
-Public JSON endpoint using the existing flat prototype payload. Required fields are `q1` through `q7` (exact values in `backend/schema.json`) and boolean `interview_optin`. `q8` is optional free text. Optional fields are `src`, `q7a`, `role`, `vendor_count`, `institution_type`, `name`, `email`, and `institution`.
+Public JSON endpoint using the existing flat prototype payload. Required fields are `q1` through `q7` (exact values in `backend/schema.json`) and boolean `interview_optin`. `q8` is optional free text. Optional fields are `src`, `q7a`, `role`, `vendor_count`, `institution_type`, `name`, `email`, `phone`, and `institution`.
 
-A name and valid email are required when interview opt-in is true. Contact fields are cleared when false; `q7a` is cleared unless a dedicated system is selected. Unknown fields are rejected. Client `submitted_at` and `hot_count` are accepted for prototype compatibility but replaced with server-generated values. Maximum body size is 24 KB; free text is limited to 2,000 characters; other limits are in `backend/app.py`.
+A name and valid email are required when interview opt-in is true. Phone is optional, accepts international formatting, and is limited to 50 characters. Contact fields are cleared when false; `q7a` is cleared unless a dedicated system is selected. Unknown fields are rejected. Client `submitted_at` and `hot_count` are accepted for prototype compatibility but replaced with server-generated values. Maximum body size is 24 KB; free text is limited to 2,000 characters; other limits are in `backend/app.py`.
 
 Send a UUID `Idempotency-Key` header. Repeating the same normalized answers under that key returns the original ID; changing answers under it returns 409. Omitting the key generates a new ID for every request.
 
