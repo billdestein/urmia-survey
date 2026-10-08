@@ -1,25 +1,368 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Brokermatic.ai | URMIA Survey</title>
-  <style>
-    :root { font-family: system-ui, sans-serif; color: #17283c; background: #f3f6fa; }
-    body { margin: 0; padding: 24px; }
-    main { max-width: 600px; margin: 8vh auto; padding: 28px; background: white; border-radius: 16px; }
-    h1 { font-size: clamp(1.8rem, 6vw, 2.4rem); line-height: 1.15; }
-    p { line-height: 1.6; }
-    .brand { font-weight: 700; color: #315b83; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TriCheck URMIA Survey</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,700;1,8..60,400;1,8..60,700&family=Inter:wght@400;500;600;800&display=swap">
+<style>
+  /* Layout: single column, max 720px, mobile-first; mirrors the printed survey page (hero → questions → $20 panel). */
+  :root {
+    --bg: #FFFFFF;
+    --fg: #0B1B33;
+    --muted: #64707F;
+    --rule: #DDE2EA;
+    --surface: #F6F8FB;
+    --panel: #0B1B33;
+    --panel-fg: #F3F5FB;
+    --panel-muted: #B7C3D6;
+    --lime: #B7F04D;
+    --accent-text: #4C8C1E;   /* lime is unreadable as text on white; this is its text-safe sibling */
+    --hot: #D9715F;
+    --focus: #4C8C1E;
+    --serif: "Source Serif 4", "Bitstream Charter", Georgia, serif;
+    --sans: "Inter", "Liberation Sans", Arial, Helvetica, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0B1B33; --fg: #F3F5FB; --muted: #B7C3D6; --rule: #2A3A55; --surface: #121F3A;
+      --panel: #06122A; --panel-fg: #F3F5FB; --panel-muted: #B7C3D6; --accent-text: #B7F04D; --focus: #B7F04D; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0B1B33; --fg: #F3F5FB; --muted: #B7C3D6; --rule: #2A3A55; --surface: #121F3A;
+    --panel: #06122A; --panel-fg: #F3F5FB; --panel-muted: #B7C3D6; --accent-text: #B7F04D; --focus: #B7F04D; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 16px; line-height: 1.5; margin: 0; padding-block: 0; padding-inline: 16px; }
+  .wrap { max-width: 720px; margin: 0 auto; padding-block: 20px 56px; }
+
+  .mast { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1.5px solid var(--fg); }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 18px; letter-spacing: -.02em; }
+  .brand svg { width: 22px; height: 22px; display: block; }
+  .kicker { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .kicker b { color: var(--accent-text); }
+
+  h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(34px, 7vw, 46px); line-height: 1.05; letter-spacing: -.015em; margin: 26px 0 10px; text-wrap: balance; }
+  h1 em { font-style: italic; color: var(--accent-text); }
+  .lede { font-family: var(--serif); font-size: 18px; color: var(--fg); margin: 0 0 18px; max-width: 60ch; }
+
+  .offer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; margin-bottom: 28px; }
+  .pill { background: var(--lime); color: #0B1B33; font-weight: 800; font-size: 14px; padding: 6px 11px; border-radius: 4px; white-space: nowrap; }
+  .offer span.t { font-size: 14px; color: var(--fg); min-width: 0; flex: 1 1 200px; }
+
+  .q { padding: 22px 0; border-top: 1px solid var(--rule); }
+  .q .head { display: flex; gap: 12px; align-items: baseline; }
+  .q .n { font-family: var(--serif); font-size: 24px; color: var(--accent-text); line-height: 1; min-width: 1.2em; }
+  .q h2 { font-family: var(--serif); font-size: 20px; font-weight: 700; margin: 0; line-height: 1.25; text-wrap: balance; }
+  .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; padding-left: calc(1.2em + 12px); }
+  @media (max-width: 480px) { .opts { grid-template-columns: 1fr; } }
+  .opt { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1.5px solid var(--rule); border-radius: 6px; cursor: pointer; font-size: 15px; line-height: 1.3; background: var(--bg); min-width: 0; }
+  .opt input { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; flex: 0 0 auto; border: 2px solid var(--fg); border-radius: 50%; margin: 0; display: grid; place-content: center; background: var(--bg); }
+  .opt input::before { content: ""; width: 9px; height: 9px; border-radius: 50%; transform: scale(0); background: var(--fg); transition: transform .12s ease; }
+  .opt input:checked::before { transform: scale(1); }
+  .opt:has(input:checked) { border-color: var(--fg); background: var(--surface); }
+  .opt.hot input { border-color: var(--hot); }
+  .opt.hot input::before { background: var(--hot); }
+  .opt:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .sub { margin-top: 12px; padding-left: calc(1.2em + 12px); }
+  .sub[hidden] { display: none; }
+  label.small { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input[type=text], input[type=email], textarea, select { width: 100%; font: inherit; font-size: 15px; color: var(--fg); background: var(--bg); border: 1.5px solid var(--rule); border-radius: 6px; padding: 11px 12px; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-color: var(--fg); }
+  textarea { min-height: 96px; resize: vertical; }
+
+  .about { padding: 22px 0 8px; border-top: 1px solid var(--rule); }
+  .about h3 { font-family: var(--serif); font-size: 20px; margin: 0 0 4px; }
+  .about p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+  .about .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .about .grid { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); color: var(--panel-fg); border-radius: 8px; padding: 22px 22px 20px; margin-top: 28px; display: grid; grid-template-columns: 104px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 560px) { .panel { grid-template-columns: 1fr; } }
+  .amt { text-align: center; border-right: 1px solid rgba(255,255,255,.18); padding-right: 14px; }
+  @media (max-width: 560px) { .amt { border-right: 0; border-bottom: 1px solid rgba(255,255,255,.18); padding: 0 0 12px; } }
+  .amt .big { font-family: var(--serif); font-size: 52px; line-height: 1; color: var(--lime); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .amt .lab { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--panel-muted); font-weight: 700; margin-top: 6px; line-height: 1.35; }
+  .panel h3 { font-family: var(--serif); font-size: 24px; margin: 0 0 8px; line-height: 1.1; }
+  .panel h3 em { font-style: italic; color: var(--lime); }
+  .panel p { margin: 0 0 10px; color: var(--panel-muted); font-size: 15px; }
+  .optin { display: flex; align-items: flex-start; gap: 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); border-radius: 6px; padding: 12px 14px; cursor: pointer; margin-top: 8px; }
+  .optin input { appearance: none; -webkit-appearance: none; width: 20px; height: 20px; flex: 0 0 auto; border: 2px solid var(--lime); border-radius: 4px; margin-top: 2px; display: grid; place-content: center; background: transparent; }
+  .optin input::before { content: ""; width: 11px; height: 11px; background: var(--lime); transform: scale(0); clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0, 43% 62%); }
+  .optin input:checked::before { transform: scale(1); }
+  .optin:has(input:focus-visible) { outline: 2px solid var(--lime); outline-offset: 2px; }
+  .optin b { color: var(--panel-fg); }
+  .optin span { font-size: 15px; line-height: 1.4; color: var(--panel-fg); }
+  .contact { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  @media (max-width: 560px) { .contact { grid-template-columns: 1fr; } }
+  .contact .full { grid-column: 1 / -1; }
+  .contact input { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.25); color: var(--panel-fg); }
+  .contact label.small { color: var(--panel-muted); }
+  .fine { font-size: 12.5px; color: var(--panel-muted); margin-top: 12px; }
+
+  .actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 22px; }
+  .count { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  button.send { font: inherit; font-weight: 800; font-size: 16px; background: var(--fg); color: var(--bg); border: 0; border-radius: 6px; padding: 14px 22px; cursor: pointer; }
+  button.send:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .err { color: var(--hot); font-size: 14px; margin-top: 10px; }
+  .err[hidden] { display: none; }
+
+  .thanks { padding: 40px 0 10px; }
+  .thanks h2 { font-family: var(--serif); font-size: 32px; margin: 0 0 10px; line-height: 1.1; }
+  .thanks p { font-size: 17px; max-width: 60ch; }
+  .thanks .sig { color: var(--muted); }
+  details { margin-top: 28px; border-top: 1px solid var(--rule); padding-top: 12px; }
+  summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  pre { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; font-size: 12px; overflow-x: auto; }
+
+  .foot { margin-top: 40px; padding-top: 12px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .foot b { color: var(--fg); }
+  @media (prefers-reduced-motion: reduce) { .opt input::before, .optin input::before { transition: none; } }
+</style>
+
 </head>
 <body>
-  <main>
-    <p class="brand">Brokermatic.ai</p>
-    <h1>URMIA conference survey</h1>
-    <p>The survey is being prepared. Please check back when it opens.</p>
-    <!-- Add only approved survey questions and privacy/consent copy here. -->
-    <!-- Configure the public POST API URL when the backend is ready. -->
+<div class="wrap">
+  <header class="mast">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#0B1B33"/><path fill="#B7F04D" fill-rule="evenodd" d="M32 12 L54 50 L10 50 Z M20.5 37 L25.5 32 L30.5 37 L39.5 27.5 L44.5 32.5 L30.5 46.5 Z"/></svg>
+      TriCheck
+    </div>
+    <div class="kicker"><b>URMIA 2026</b></div>
+  </header>
+
+  <main id="formview">
+    <h1>Two minutes. <em>Eight questions.</em></h1>
+    <p class="lede">Where does your COI circle break? No pitch. We're here to listen.</p>
+    <div class="offer">
+      <span class="pill">$20 Amazon gift card</span>
+      <span class="t">for a 20-minute call afterward. Optional — we'll ask at the end.</span>
+    </div>
+
+    <form id="survey" novalidate>
+      <input type="hidden" id="src" name="src" value="urmia">
+
+      <section class="q" data-q="q1">
+        <div class="head"><span class="n">1</span><h2 id="q1h">From vendor request to "cleared to work," how long does it usually take?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q1h">
+          <label class="opt"><input type="radio" name="q1" id="q1a" value="Same day">Same day</label>
+          <label class="opt"><input type="radio" name="q1" id="q1b" value="2–5 days">2–5 days</label>
+          <label class="opt"><input type="radio" name="q1" id="q1c" value="1–2 weeks">1–2 weeks</label>
+          <label class="opt hot"><input type="radio" name="q1" id="q1d" value="We don't really know" data-hot>We don't really know</label>
+        </div>
+      </section>
+
+      <section class="q" data-q="q2">
+        <div class="head"><span class="n">2</span><h2 id="q2h">Where do the insurance requirements for a given vendor actually live?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q2h">
+          <label class="opt"><input type="radio" name="q2" id="q2a" value="The contract">The contract</label>
+          <label class="opt"><input type="radio" name="q2" id="q2b" value="A standard exhibit">A standard exhibit</label>
+          <label class="opt"><input type="radio" name="q2" id="q2c" value="A campus policy">A campus policy</label>
+          <label class="opt hot"><input type="radio" name="q2" id="q2d" value="Someone's head" data-hot>Someone's head</label>
+        </div>
+      </section>
+
+      <section class="q" data-q="q3">
+        <div class="head"><span class="n">3</span><h2 id="q3h">Who reviews the COI against the requirement?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q3h">
+          <label class="opt"><input type="radio" name="q3" id="q3a" value="Risk">Risk</label>
+          <label class="opt"><input type="radio" name="q3" id="q3b" value="Procurement">Procurement</label>
+          <label class="opt"><input type="radio" name="q3" id="q3c" value="The hiring department">The hiring department</label>
+          <label class="opt hot"><input type="radio" name="q3" id="q3d" value="Whoever has time" data-hot>Whoever has time</label>
+        </div>
+      </section>
+
+      <section class="q" data-q="q4">
+        <div class="head"><span class="n">4</span><h2 id="q4h">Who approves an exception when a vendor can't meet the requirement?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q4h">
+          <label class="opt"><input type="radio" name="q4" id="q4a" value="Risk, and it's documented">Risk, and it's documented</label>
+          <label class="opt"><input type="radio" name="q4" id="q4b" value="A department head, informally">A department head, informally</label>
+          <label class="opt"><input type="radio" name="q4" id="q4c" value="Whoever is asked">Whoever is asked</label>
+          <label class="opt hot"><input type="radio" name="q4" id="q4d" value="Nobody — we just proceed" data-hot>Nobody — we just proceed</label>
+        </div>
+      </section>
+
+      <section class="q" data-q="q5">
+        <div class="head"><span class="n">5</span><h2 id="q5h">How does Accounts Payable know a vendor is cleared to be paid?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q5h">
+          <label class="opt"><input type="radio" name="q5" id="q5a" value="System status">System status</label>
+          <label class="opt"><input type="radio" name="q5" id="q5b" value="Email from Risk">Email from Risk</label>
+          <label class="opt"><input type="radio" name="q5" id="q5c" value="They ask">They ask</label>
+          <label class="opt hot"><input type="radio" name="q5" id="q5d" value="They don't check" data-hot>They don't check</label>
+        </div>
+      </section>
+
+      <section class="q" data-q="q6">
+        <div class="head"><span class="n">6</span><h2 id="q6h">How many renewals per month do you chase?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q6h">
+          <label class="opt"><input type="radio" name="q6" id="q6a" value="0–10">0–10</label>
+          <label class="opt"><input type="radio" name="q6" id="q6b" value="10–50">10–50</label>
+          <label class="opt"><input type="radio" name="q6" id="q6c" value="50–200">50–200</label>
+          <label class="opt hot"><input type="radio" name="q6" id="q6d" value="200+" data-hot>200+</label>
+        </div>
+      </section>
+
+      <section class="q" data-q="q7">
+        <div class="head"><span class="n">7</span><h2 id="q7h">Where do you track vendor compliance status?</h2></div>
+        <div class="opts" role="radiogroup" aria-labelledby="q7h">
+          <label class="opt"><input type="radio" name="q7" id="q7a" value="A dedicated system">A dedicated system</label>
+          <label class="opt"><input type="radio" name="q7" id="q7b" value="Our ERP or procurement platform">Our ERP or procurement platform</label>
+          <label class="opt"><input type="radio" name="q7" id="q7c" value="Spreadsheets and email">Spreadsheets and email</label>
+          <label class="opt hot"><input type="radio" name="q7" id="q7d" value="It's not tracked in one place" data-hot>It's not tracked in one place</label>
+        </div>
+        <div class="sub" id="q7a_wrap" hidden>
+          <label class="small" for="q7a_text">Which system?</label>
+          <input type="text" id="q7a_text" name="q7a" placeholder="e.g. Ebix, Origami, CertTrax, homegrown" autocomplete="off">
+        </div>
+      </section>
+
+      <section class="q" data-q="q8">
+        <div class="head"><span class="n">8</span><h2 id="q8h">Where does it break most for you?</h2></div>
+        <div class="sub">
+          <textarea id="q8" name="q8" placeholder="One sentence is plenty." aria-labelledby="q8h"></textarea>
+        </div>
+      </section>
+
+      <section class="about">
+        <h3>A little about you</h3>
+        <p>Optional. It helps us know who we're hearing from.</p>
+        <div class="grid">
+          <div>
+            <label class="small" for="role">Your role</label>
+            <select id="role" name="role">
+              <option value="">Choose one</option>
+              <option>Risk Management / Insurance</option>
+              <option>Procurement / Supply Chain</option>
+              <option>Treasury / Finance</option>
+              <option>Facilities / Capital Projects</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div>
+            <label class="small" for="vendor_count">Active vendors, roughly</label>
+            <select id="vendor_count" name="vendor_count">
+              <option value="">Choose one</option>
+              <option>Under 50</option>
+              <option>50–200</option>
+              <option>200–1,000</option>
+              <option>1,000+</option>
+            </select>
+          </div>
+          <div>
+            <label class="small" for="institution_type">Institution</label>
+            <select id="institution_type" name="institution_type">
+              <option value="">Choose one</option>
+              <option>Public</option>
+              <option>Private</option>
+              <option>Other (health system, agency, etc.)</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="amt"><div class="big">$20</div><div class="lab">Amazon<br>gift card</div></div>
+        <div>
+          <h3>Twenty minutes, <em>twenty dollars.</em></h3>
+          <p>If you'd walk us through how vendor clearance actually works at your school — a 20-minute call, on your calendar — we'll send a $20 Amazon gift card afterward as a thank-you. Not for saying anything nice about us. No pitch. We're here to listen.</p>
+          <label class="optin"><input type="checkbox" id="optin" name="interview_optin"><span><b>I'd do a 20-minute call</b> to walk you through how this works at my school.</span></label>
+          <div class="contact" id="contact" hidden>
+            <div><label class="small" for="name">Name</label><input type="text" id="name" name="name" autocomplete="name"></div>
+            <div><label class="small" for="email">Email</label><input type="email" id="email" name="email" autocomplete="email"></div>
+            <div class="full"><label class="small" for="institution">Institution (optional)</label><input type="text" id="institution" name="institution" autocomplete="organization"></div>
+          </div>
+          <div class="fine">Some institutions restrict gifts to employees. It's completely fine to decline the card and still do the call.</div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <div class="count" id="count">0 of 7 answered</div>
+        <button class="send" type="submit" id="send">Send my answers</button>
+      </div>
+      <div class="err" id="err" hidden></div>
+    </form>
   </main>
+
+  <section id="thanksview" class="thanks" hidden>
+    <h2 id="thanks_h">Thanks.</h2>
+    <p id="thanks_p"></p>
+    <p class="sig">— Don &amp; Matt, TriCheck</p>
+    <details>
+      <summary>For the engineers: payload this submission would send</summary>
+      <pre id="payload"></pre>
+    </details>
+  </section>
+
+  <footer class="foot">
+    <div><b>TriCheck</b> · Vendor clearance for higher education</div>
+    <div>don@tricheck.ai · tricheck.ai</div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const form = document.getElementById('survey');
+  const count = document.getElementById('count');
+  const err = document.getElementById('err');
+  const q7wrap = document.getElementById('q7a_wrap');
+  const contact = document.getElementById('contact');
+  const REQUIRED = ['q1','q2','q3','q4','q5','q6','q7'];
+
+  function answered() {
+    return REQUIRED.filter(n => form.querySelector(`input[name="${n}"]:checked`)).length;
+  }
+  function refresh() {
+    count.textContent = `${answered()} of 7 answered`;
+    const q7 = form.querySelector('input[name="q7"]:checked');
+    q7wrap.hidden = !(q7 && q7.value === 'A dedicated system');
+    contact.hidden = !document.getElementById('optin').checked;
+  }
+  form.addEventListener('change', refresh);
+  refresh();
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    err.hidden = true;
+    const missing = REQUIRED.filter(n => !form.querySelector(`input[name="${n}"]:checked`));
+    if (missing.length) {
+      err.textContent = `Please answer question${missing.length > 1 ? 's' : ''} ${missing.map(m => m.slice(1)).join(', ')} — they're the quick ones.`;
+      err.hidden = false;
+      document.querySelector(`[data-q="${missing[0]}"]`).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    const optin = document.getElementById('optin').checked;
+    const name = document.getElementById('name').value.trim();
+    const email = document.getElementById('email').value.trim();
+    if (optin && (!name || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))) {
+      err.textContent = 'To set up the call we need your name and a working email.';
+      err.hidden = false;
+      contact.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const data = Object.fromEntries(new FormData(form).entries());
+    let hot = 0;
+    REQUIRED.forEach(n => { const el = form.querySelector(`input[name="${n}"]:checked`); if (el && el.hasAttribute('data-hot')) hot++; });
+    const payload = {
+      submitted_at: new Date().toISOString(),
+      src: data.src || 'direct',
+      q1: data.q1, q2: data.q2, q3: data.q3, q4: data.q4, q5: data.q5, q6: data.q6, q7: data.q7,
+      q7a: data.q7a || '', q8: data.q8 || '', hot_count: hot,
+      role: data.role || '', vendor_count: data.vendor_count || '', institution_type: data.institution_type || '',
+      interview_optin: optin,
+      name: optin ? name : '', email: optin ? email : '', institution: optin ? (data.institution || '') : ''
+    };
+    document.getElementById('payload').textContent = JSON.stringify(payload, null, 2);
+    document.getElementById('thanks_h').textContent = optin ? 'Thanks — we\'ll be in touch.' : 'Thanks.';
+    document.getElementById('thanks_p').textContent = optin
+      ? 'We\'ll email you within a few days to find twenty minutes that work for you.'
+      : 'That took you two minutes and it helps us more than you\'d think. If you change your mind about a call, it\'s don@tricheck.ai.';
+    document.getElementById('formview').hidden = true;
+    document.getElementById('thanksview').hidden = false;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+})();
+</script>
+
 </body>
 </html>

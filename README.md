@@ -4,21 +4,23 @@ Brokermatic.ai postcard QR codes will link to a mobile-friendly, single-file sur
 
 ## Status
 
-Initial scaffold only. Survey questions, privacy/consent copy, GitHub destination, API URL, authentication configuration, and deployment details are pending. No AWS resources are deployed. The placeholder page does not collect or submit responses.
+The supplied TriCheck URMIA survey prototype is now in `index.html`, with its questions and design preserved. It validates answers and displays a sample JSON payload locally; it does not send or store responses. API URL, backend implementation, authentication configuration, final privacy/consent review, and deployment are pending. No AWS resources are deployed.
+
+Repository: https://brokermatic.ghe.com/brokermatic/urmia-survey (private).
 
 ## Structure
 
-- `index.html`: mobile-friendly placeholder for the single-file survey.
+- `index.html`: supplied single-file TriCheck survey prototype, with mobile viewport metadata.
 - `backend/README.md`: backend implementation requirements.
 - `docs/api-contract.md`: proposed request and export contract.
 - `docs/pages-workflow.yml`: template for a manually triggered GitHub Pages deployment.
 
 ## Next steps
 
-1. Confirm repository owner, name, and visibility.
-2. Supply survey questions, response types, required fields, and approved privacy/consent copy.
+1. Repository initialized under `brokermatic/urmia-survey` on GitHub Enterprise.
+2. Review the supplied survey questions and approve privacy/consent copy.
 3. Implement and deploy the backend and authenticated export.
-4. Configure the API URL and implement the survey in `index.html`.
+4. Connect `index.html` to the POST API; show success only after storage is confirmed. Align the API contract with the prototype payload.
 5. With a GitHub credential that has workflow permission, move `docs/pages-workflow.yml` to `.github/workflows/pages.yml`. Enable GitHub Pages with GitHub Actions as the source, then run the workflow. Confirm that the published site is publicly accessible for postcard recipients.
 6. Verify mobile submission and export before printing the final QR-code URL.
 
